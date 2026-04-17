@@ -5,7 +5,9 @@ import re, json
 from pathlib import Path
 
 app = FastAPI(title="Analyse Règlements CAM")
-app.mount("/static", StaticFiles(directory="static"), name="static")
+
+BASE_DIR = Path(__file__).parent
+app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 
 TARGET_CAMS = [
     "cam01","cam02","cam03","cam04","cam05","cam06",
@@ -17,7 +19,7 @@ TYPE_KEYS = ["Espèces", "Traite", "Chèque"]
 
 @app.get("/", response_class=HTMLResponse)
 def index():
-    return Path("static/index.html").read_text(encoding="utf-8")
+    return (BASE_DIR / "static" / "index.html").read_text(encoding="utf-8")
 
 
 @app.post("/upload")
