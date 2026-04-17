@@ -1,0 +1,529 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Analyse Règlements CAM</title>
+<style>
+  :root {
+    --bg: #f5f4f0;
+    --surface: #ffffff;
+    --surface2: #f0efe9;
+    --border: rgba(0,0,0,0.1);
+    --border2: rgba(0,0,0,0.18);
+    --text: #1a1a18;
+    --text2: #5a5a56;
+    --text3: #8a8a84;
+    --teal: #1D9E75;
+    --teal-light: #E1F5EE;
+    --teal-dark: #085041;
+    --blue: #378ADD;
+    --blue-light: #E6F1FB;
+    --blue-dark: #0C447C;
+    --pink: #D4537E;
+    --pink-light: #FBEAF0;
+    --pink-dark: #72243E;
+    --amber: #BA7517;
+    --amber-light: #FAEEDA;
+    --radius: 10px;
+    --radius-sm: 6px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #111110;
+      --surface: #1c1c1a;
+      --surface2: #252523;
+      --border: rgba(255,255,255,0.1);
+      --border2: rgba(255,255,255,0.18);
+      --text: #f0efe9;
+      --text2: #a0a09a;
+      --text3: #666660;
+      --teal-light: #04342C;
+      --teal-dark: #9FE1CB;
+      --blue-light: #042C53;
+      --blue-dark: #B5D4F4;
+      --pink-light: #4B1528;
+      --pink-dark: #F4C0D1;
+      --amber-light: #412402;
+      --amber: #FAC775;
+    }
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+    font-size: 14px;
+  }
+
+  /* ── Header ── */
+  header {
+    background: var(--surface);
+    border-bottom: 0.5px solid var(--border);
+    padding: 0 2rem;
+    height: 56px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    position: sticky;
+    top: 0;
+    z-index: 10;
+  }
+  .logo {
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--text);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .logo-dot {
+    width: 8px; height: 8px;
+    background: var(--teal);
+    border-radius: 50%;
+  }
+  .header-meta {
+    font-size: 12px;
+    color: var(--text3);
+  }
+
+  /* ── Layout ── */
+  main {
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 2rem 1.5rem;
+  }
+
+  /* ── Upload ── */
+  .upload-card {
+    background: var(--surface);
+    border: 1.5px dashed var(--border2);
+    border-radius: var(--radius);
+    padding: 3rem 2rem;
+    text-align: center;
+    cursor: pointer;
+    transition: border-color 0.15s, background 0.15s;
+    margin-bottom: 2rem;
+  }
+  .upload-card:hover, .upload-card.drag { border-color: var(--teal); background: var(--teal-light); }
+  .upload-card input { display: none; }
+  .upload-icon {
+    width: 48px; height: 48px;
+    margin: 0 auto 1rem;
+    background: var(--teal-light);
+    border-radius: 12px;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .upload-icon svg { width: 24px; height: 24px; stroke: var(--teal); fill: none; stroke-width: 1.8; }
+  .upload-title { font-size: 16px; font-weight: 600; margin-bottom: 6px; }
+  .upload-sub { font-size: 13px; color: var(--text2); }
+  .upload-btn {
+    display: inline-block;
+    margin-top: 1.25rem;
+    padding: 8px 20px;
+    background: var(--teal);
+    color: #fff;
+    border-radius: var(--radius-sm);
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    border: none;
+    transition: opacity 0.15s;
+  }
+  .upload-btn:hover { opacity: 0.88; }
+
+  /* ── Stats row ── */
+  .stats-row {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 12px;
+    margin-bottom: 1.75rem;
+  }
+  .stat-card {
+    background: var(--surface);
+    border: 0.5px solid var(--border);
+    border-radius: var(--radius);
+    padding: 1rem 1.25rem;
+  }
+  .stat-label { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--text3); margin-bottom: 6px; }
+  .stat-val { font-size: 22px; font-weight: 600; color: var(--text); }
+  .stat-sub { font-size: 11px; color: var(--text3); margin-top: 3px; }
+
+  /* ── Tabs ── */
+  .tabs {
+    display: flex;
+    gap: 0;
+    border-bottom: 0.5px solid var(--border);
+    margin-bottom: 1.25rem;
+  }
+  .tab-btn {
+    padding: 10px 18px;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text2);
+    cursor: pointer;
+    border: none;
+    background: transparent;
+    border-bottom: 2px solid transparent;
+    margin-bottom: -0.5px;
+    transition: color 0.12s;
+  }
+  .tab-btn.active { color: var(--text); border-bottom-color: var(--teal); }
+  .tab-panel { display: none; }
+  .tab-panel.active { display: block; }
+
+  /* ── Table ── */
+  .table-wrap {
+    background: var(--surface);
+    border: 0.5px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+  }
+  table { width: 100%; border-collapse: collapse; }
+  th {
+    background: var(--surface2);
+    padding: 10px 14px;
+    text-align: left;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: .04em;
+    color: var(--text2);
+    border-bottom: 0.5px solid var(--border);
+  }
+  td {
+    padding: 10px 14px;
+    border-bottom: 0.5px solid var(--border);
+    color: var(--text);
+    vertical-align: middle;
+  }
+  tr:last-child td { border-bottom: none; }
+  tr:hover td { background: var(--surface2); }
+  .num { text-align: right; font-variant-numeric: tabular-nums; }
+
+  /* ── Rank badge ── */
+  .rank {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 24px; height: 24px; border-radius: 50%;
+    font-size: 11px; font-weight: 700;
+    background: var(--surface2); color: var(--text2);
+  }
+  .rank-1 { background: #FAC775; color: #412402; }
+  .rank-2 { background: #D3D1C7; color: #2C2C2A; }
+  .rank-3 { background: #F5C4B3; color: #4A1B0C; }
+
+  /* ── CAM badge ── */
+  .cam-badge {
+    font-size: 12px; font-weight: 700;
+    padding: 3px 10px;
+    border-radius: 20px;
+    background: var(--surface2);
+    color: var(--text);
+    letter-spacing: .03em;
+  }
+
+  /* ── Type pill ── */
+  .pill {
+    display: inline-block;
+    padding: 2px 9px;
+    border-radius: 20px;
+    font-size: 11px; font-weight: 600;
+  }
+  .pill-esp { background: var(--teal-light); color: var(--teal-dark); }
+  .pill-trt { background: var(--blue-light); color: var(--blue-dark); }
+  .pill-chq { background: var(--pink-light); color: var(--pink-dark); }
+
+  /* ── Mini bar chart ── */
+  .bars { display: flex; flex-direction: column; gap: 3px; min-width: 120px; }
+  .bar-row { display: flex; align-items: center; gap: 5px; }
+  .bar-track { flex: 1; height: 5px; background: var(--surface2); border-radius: 3px; overflow: hidden; }
+  .bar-fill { height: 100%; border-radius: 3px; transition: width 0.4s ease; }
+  .bar-label { font-size: 10px; color: var(--text3); width: 12px; }
+
+  /* ── Legend ── */
+  .legend {
+    display: flex; gap: 18px; flex-wrap: wrap;
+    margin-bottom: 1rem;
+    font-size: 12px; color: var(--text2);
+  }
+  .legend-item { display: flex; align-items: center; gap: 6px; }
+  .legend-dot { width: 10px; height: 10px; border-radius: 3px; }
+
+  /* ── Loading / empty ── */
+  .state-msg {
+    text-align: center;
+    padding: 4rem 2rem;
+    color: var(--text3);
+    font-size: 14px;
+  }
+  .spinner {
+    width: 28px; height: 28px;
+    border: 2.5px solid var(--border2);
+    border-top-color: var(--teal);
+    border-radius: 50%;
+    animation: spin .7s linear infinite;
+    margin: 0 auto 1rem;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ── File badge in header ── */
+  .file-badge {
+    background: var(--teal-light);
+    color: var(--teal-dark);
+    border-radius: 20px;
+    padding: 3px 12px;
+    font-size: 12px;
+    font-weight: 500;
+  }
+
+  /* ── Responsive ── */
+  @media (max-width: 700px) {
+    .stats-row { grid-template-columns: repeat(2,1fr); }
+    main { padding: 1rem; }
+    th, td { padding: 8px 10px; font-size: 12px; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">
+    <div class="logo-dot"></div>
+    Analyse Règlements CAM
+  </div>
+  <div id="file-badge"></div>
+</header>
+
+<main>
+
+  <!-- Upload zone -->
+  <div class="upload-card" id="dropzone" onclick="document.getElementById('fileInput').click()">
+    <input type="file" id="fileInput" accept=".txt,.csv">
+    <div class="upload-icon">
+      <svg viewBox="0 0 24 24"><path d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M16 12l-4-4-4 4M12 8v8"/></svg>
+    </div>
+    <div class="upload-title">Importer le fichier de règlements</div>
+    <div class="upload-sub">Fichier .txt mensuel — séparateur point-virgule</div>
+    <button class="upload-btn" onclick="event.stopPropagation();" onpointerdown="document.getElementById('fileInput').click()">Choisir un fichier</button>
+  </div>
+
+  <!-- Stats row -->
+  <div class="stats-row" id="stats-row" style="display:none">
+    <div class="stat-card">
+      <div class="stat-label">Total règlements</div>
+      <div class="stat-val" id="s-total">—</div>
+      <div class="stat-sub">DT</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Nb opérations</div>
+      <div class="stat-val" id="s-count">—</div>
+      <div class="stat-sub" id="s-skip"></div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">CAMs actives</div>
+      <div class="stat-val" id="s-cams">—</div>
+      <div class="stat-sub">sur 11 ciblées</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">CAM leader</div>
+      <div class="stat-val" id="s-leader" style="font-size:16px">—</div>
+      <div class="stat-sub" id="s-leader-amt"></div>
+    </div>
+  </div>
+
+  <!-- Tabs + tables -->
+  <div id="results-section" style="display:none">
+
+    <div class="legend">
+      <div class="legend-item"><div class="legend-dot" style="background:var(--teal)"></div>Espèces (CESP)</div>
+      <div class="legend-item"><div class="legend-dot" style="background:var(--blue)"></div>Traite (CTRT)</div>
+      <div class="legend-item"><div class="legend-dot" style="background:var(--pink)"></div>Chèque (CCHQR)</div>
+    </div>
+
+    <div class="tabs">
+      <button class="tab-btn active" onclick="switchTab('ranking')">Classement</button>
+      <button class="tab-btn" onclick="switchTab('detail')">Détail par type</button>
+      <button class="tab-btn" onclick="switchTab('ops')">Opérations</button>
+    </div>
+
+    <div id="tab-ranking" class="tab-panel active">
+      <div class="table-wrap">
+        <table>
+          <thead><tr>
+            <th style="width:40px">Rang</th>
+            <th style="width:90px">CAM</th>
+            <th>Répartition</th>
+            <th class="num" style="width:130px">Total (DT)</th>
+            <th class="num" style="width:80px">Ops</th>
+          </tr></thead>
+          <tbody id="ranking-body"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div id="tab-detail" class="tab-panel">
+      <div class="table-wrap">
+        <table>
+          <thead><tr>
+            <th style="width:90px">CAM</th>
+            <th class="num">Espèces (DT)</th>
+            <th class="num">Traite (DT)</th>
+            <th class="num">Chèque (DT)</th>
+            <th class="num">Total (DT)</th>
+          </tr></thead>
+          <tbody id="detail-body"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div id="tab-ops" class="tab-panel">
+      <div class="table-wrap">
+        <table>
+          <thead><tr>
+            <th style="width:90px">CAM</th>
+            <th class="num">Nb Espèces</th>
+            <th class="num">Nb Traite</th>
+            <th class="num">Nb Chèque</th>
+            <th class="num">Total ops</th>
+          </tr></thead>
+          <tbody id="ops-body"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <div id="loading" style="display:none" class="state-msg">
+    <div class="spinner"></div>
+    Analyse en cours…
+  </div>
+  <div id="empty-msg" style="display:none" class="state-msg">
+    Aucune ligne trouvée pour les CAMs ciblées dans ce fichier.
+  </div>
+
+</main>
+
+<script>
+const fmt = n => n.toLocaleString('fr-TN', {minimumFractionDigits:3, maximumFractionDigits:3});
+const fmtI = n => n.toLocaleString('fr-TN');
+
+// drag & drop
+const dz = document.getElementById('dropzone');
+dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('drag'); });
+dz.addEventListener('dragleave', () => dz.classList.remove('drag'));
+dz.addEventListener('drop', e => {
+  e.preventDefault(); dz.classList.remove('drag');
+  const f = e.dataTransfer.files[0]; if(f) sendFile(f);
+});
+document.getElementById('fileInput').addEventListener('change', e => {
+  if(e.target.files[0]) sendFile(e.target.files[0]);
+});
+
+async function sendFile(file) {
+  document.getElementById('loading').style.display = 'block';
+  document.getElementById('results-section').style.display = 'none';
+  document.getElementById('stats-row').style.display = 'none';
+  document.getElementById('empty-msg').style.display = 'none';
+
+  const fd = new FormData();
+  fd.append('file', file);
+
+  try {
+    const res = await fetch('/upload', { method: 'POST', body: fd });
+    const data = await res.json();
+    render(data);
+  } catch(e) {
+    document.getElementById('loading').style.display = 'none';
+    alert('Erreur lors de l\'analyse du fichier.');
+  }
+}
+
+function render(data) {
+  document.getElementById('loading').style.display = 'none';
+
+  if (!data.rows || data.rows.length === 0) {
+    document.getElementById('empty-msg').style.display = 'block';
+    return;
+  }
+
+  // file badge
+  document.getElementById('file-badge').innerHTML =
+    `<span class="file-badge">${data.filename}</span>`;
+
+  // stats
+  document.getElementById('s-total').textContent = fmt(data.grand_total);
+  document.getElementById('s-count').textContent = fmtI(data.grand_count);
+  document.getElementById('s-skip').textContent = `${data.lines_parsed} lignes analysées`;
+  document.getElementById('s-cams').textContent = data.active_cams;
+  document.getElementById('s-leader').textContent = data.rows[0].cam;
+  document.getElementById('s-leader-amt').textContent = fmt(data.rows[0].total) + ' DT';
+  document.getElementById('stats-row').style.display = 'grid';
+
+  const maxTotal = data.rows[0].total;
+
+  // ── Ranking tab ──
+  const rb = document.getElementById('ranking-body');
+  rb.innerHTML = '';
+  data.rows.forEach(r => {
+    const rankCls = r.rank <= 3 ? `rank-${r.rank}` : '';
+    const espPct = maxTotal ? Math.round(r.esp / maxTotal * 100) : 0;
+    const trtPct = maxTotal ? Math.round(r.trt / maxTotal * 100) : 0;
+    const chqPct = maxTotal ? Math.round(r.chq / maxTotal * 100) : 0;
+
+    rb.innerHTML += `<tr>
+      <td><span class="rank ${rankCls}">${r.rank}</span></td>
+      <td><span class="cam-badge">${r.cam}</span></td>
+      <td>
+        <div class="bars">
+          ${espPct > 0 ? `<div class="bar-row"><span class="bar-label" style="color:var(--teal);font-weight:700">E</span><div class="bar-track"><div class="bar-fill" style="width:${espPct}%;background:var(--teal)"></div></div></div>` : ''}
+          ${trtPct > 0 ? `<div class="bar-row"><span class="bar-label" style="color:var(--blue);font-weight:700">T</span><div class="bar-track"><div class="bar-fill" style="width:${trtPct}%;background:var(--blue)"></div></div></div>` : ''}
+          ${chqPct > 0 ? `<div class="bar-row"><span class="bar-label" style="color:var(--pink);font-weight:700">C</span><div class="bar-track"><div class="bar-fill" style="width:${chqPct}%;background:var(--pink)"></div></div></div>` : ''}
+        </div>
+      </td>
+      <td class="num" style="font-weight:600">${fmt(r.total)}</td>
+      <td class="num" style="color:var(--text2)">${fmtI(r.total_count)}</td>
+    </tr>`;
+  });
+
+  // ── Detail tab ──
+  const db = document.getElementById('detail-body');
+  db.innerHTML = '';
+  data.rows.forEach(r => {
+    db.innerHTML += `<tr>
+      <td><span class="cam-badge">${r.cam}</span></td>
+      <td class="num">${r.esp > 0 ? `<span class="pill pill-esp">${fmt(r.esp)}</span>` : '<span style="color:var(--text3)">—</span>'}</td>
+      <td class="num">${r.trt > 0 ? `<span class="pill pill-trt">${fmt(r.trt)}</span>` : '<span style="color:var(--text3)">—</span>'}</td>
+      <td class="num">${r.chq > 0 ? `<span class="pill pill-chq">${fmt(r.chq)}</span>` : '<span style="color:var(--text3)">—</span>'}</td>
+      <td class="num" style="font-weight:600">${fmt(r.total)}</td>
+    </tr>`;
+  });
+
+  // ── Ops tab ──
+  const ob = document.getElementById('ops-body');
+  ob.innerHTML = '';
+  data.rows.forEach(r => {
+    ob.innerHTML += `<tr>
+      <td><span class="cam-badge">${r.cam}</span></td>
+      <td class="num">${r.esp_count > 0 ? `<span class="pill pill-esp">${r.esp_count}</span>` : '<span style="color:var(--text3)">—</span>'}</td>
+      <td class="num">${r.trt_count > 0 ? `<span class="pill pill-trt">${r.trt_count}</span>` : '<span style="color:var(--text3)">—</span>'}</td>
+      <td class="num">${r.chq_count > 0 ? `<span class="pill pill-chq">${r.chq_count}</span>` : '<span style="color:var(--text3)">—</span>'}</td>
+      <td class="num" style="font-weight:600">${r.total_count}</td>
+    </tr>`;
+  });
+
+  document.getElementById('results-section').style.display = 'block';
+}
+
+function switchTab(name) {
+  document.querySelectorAll('.tab-btn').forEach((b,i) => {
+    b.classList.toggle('active', ['ranking','detail','ops'][i] === name);
+  });
+  document.querySelectorAll('.tab-panel').forEach(p => {
+    p.classList.toggle('active', p.id === 'tab-' + name);
+  });
+}
+</script>
+</body>
+</html>
