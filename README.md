@@ -1,36 +1,26 @@
-# Analyse Règlements CAM
+# Réglements CAM — Dashboard
 
-## Structure
-```
-reglement_app/
-├── main.py            ← FastAPI backend
-├── requirements.txt
-└── static/
-    └── index.html     ← Frontend (HTML + CSS + JS)
-```
-
-## Lancement
+## 🚀 Lancement rapide (FastAPI)
 
 ```bash
-# 1. Installer les dépendances
+cd reglements_app
 pip install -r requirements.txt
-
-# 2. Lancer le serveur (depuis le dossier reglement_app/)
-uvicorn main:app --reload
-
-# 3. Ouvrir dans le navigateur
-# http://localhost:8000
+uvicorn main:app --reload --port 8000
 ```
+Puis ouvrir **http://localhost:8000**
 
-## Utilisation
-- Glisser-déposer ou cliquer pour uploader votre fichier .txt mensuel
-- Le fichier est analysé côté serveur (FastAPI)
-- 3 onglets : Classement / Détail par type / Opérations
+---
 
-## CAMs ciblées
-cam01, cam02, cam03, cam04, cam05, cam06, cam36, cam37, cam38, cam48, cam49
+## 📋 Utilisation
 
-## Types de règlement détectés
-- CESP... → Espèces
-- CTRT... → Traite
-- CCHQR... → Chèque
+1. Glisser-déposer ou sélectionner votre fichier `.txt` mensuel
+2. Le dashboard affiche automatiquement :
+   - **Résumé global** : total réglé, nb transactions, CAMs actives
+   - **Par type** : Espèces (CESP), Traite (CTRT), Chèque (CCHQR)
+   - **Classement des CAMs** : rang, montant, détail par type, part en %
+
+## 🎯 CAMs ciblées
+CAM01, CAM02, CAM03, CAM04, CAM05, CAM06, CAM36, CAM37, CAM38, CAM48, CAM49
+
+## 📓 Google Colab
+Ouvrir `analyse_reglements.ipynb` dans Google Colab pour l'analyse Python avec export CSV.
