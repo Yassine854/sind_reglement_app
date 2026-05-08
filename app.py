@@ -16,18 +16,19 @@ TYPE_MAP = {
 CAM_SITE_MAP: dict[str, str] = {
     # SFX
     "CAM01": "SFX", "CAM02": "SFX", "CAM03": "SFX", "CAM04": "SFX",
-    "CAM05": "SFX", "CAM06": "SFX", "CAM36": "SFX", "CAM37": "SFX",
-    "CAM38": "SFX", "CAM48": "SFX", "CAM49": "SFX",
+    "CAM05": "SFX", "CAM06": "SFX", "CAM07": "SFX", "CAM36": "SFX",
+    "CAM37": "SFX", "CAM38": "SFX", "CAM48": "SFX", "CAM49": "SFX",
+    "CAM58": "SFX", "CAM59": "SFX",
     # MAH
     "CAM40": "MAH", "CAM41": "MAH", "CAM42": "MAH", "CAM43": "MAH",
-    "CAM44": "MAH",
+    "CAM44": "MAH", "CAM45": "MAH", "CAM57": "MAH",
     # NAB
     "CAM50": "NAB", "CAM51": "NAB", "CAM52": "NAB", "CAM53": "NAB",
     "CAM54": "NAB",
     # SSE
     "CAM08": "SSE", "CAM09": "SSE", "CAM10": "SSE", "CAM11": "SSE",
     "CAM12": "SSE", "CAM13": "SSE", "CAM14": "SSE", "CAM15": "SSE",
-    "CAM46": "SSE",
+    "CAM39": "SSE", "CAM46": "SSE", "CAM47": "SSE",
     # TUN
     "CAM16": "TUN", "CAM17": "TUN", "CAM18": "TUN", "CAM19": "TUN",
     "CAM20": "TUN", "CAM21": "TUN", "CAM22": "TUN", "CAM23": "TUN",
