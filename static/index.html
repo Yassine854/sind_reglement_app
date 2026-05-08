@@ -225,6 +225,30 @@
     letter-spacing: .03em;
   }
 
+  /* ── Site badge ── */
+  .site-badge {
+    display: inline-block;
+    font-size: 10px; font-weight: 700;
+    padding: 2px 7px;
+    border-radius: 20px;
+    letter-spacing: .06em;
+    margin-left: 5px;
+    vertical-align: middle;
+  }
+  .site-SFX { background: #E6F1FB; color: #0C447C; }
+  .site-MAH { background: #E1F5EE; color: #085041; }
+  .site-NAB { background: #FAEEDA; color: #5a3000; }
+  .site-SSE { background: #FBEAF0; color: #72243E; }
+  .site-TUN { background: #EDE9FB; color: #3D1D7C; }
+  .site-Inconnu { background: var(--surface2); color: var(--text3); }
+  @media (prefers-color-scheme: dark) {
+    .site-SFX { background: #042C53; color: #B5D4F4; }
+    .site-MAH { background: #04342C; color: #9FE1CB; }
+    .site-NAB { background: #412402; color: #FAC775; }
+    .site-SSE { background: #4B1528; color: #F4C0D1; }
+    .site-TUN { background: #2A1650; color: #C8B4F4; }
+  }
+
   /* ── Type pill ── */
   .pill {
     display: inline-block;
@@ -347,6 +371,7 @@
       <button class="tab-btn active" onclick="switchTab('ranking')">Classement</button>
       <button class="tab-btn" onclick="switchTab('detail')">Détail par type</button>
       <button class="tab-btn" onclick="switchTab('ops')">Opérations</button>
+      <button class="tab-btn" onclick="switchTab('sites')">Par site</button>
     </div>
 
     <div id="tab-ranking" class="tab-panel active">
@@ -354,7 +379,7 @@
         <table>
           <thead><tr>
             <th style="width:40px">Rang</th>
-            <th style="width:90px">CAM</th>
+            <th style="width:130px">CAM</th>
             <th>Répartition</th>
             <th class="num" style="width:130px">Total (DT)</th>
             <th class="num" style="width:80px">Ops</th>
@@ -368,7 +393,7 @@
       <div class="table-wrap">
         <table>
           <thead><tr>
-            <th style="width:90px">CAM</th>
+            <th style="width:130px">CAM</th>
             <th class="num">Espèces (DT)</th>
             <th class="num">Traite (DT)</th>
             <th class="num">Chèque (DT)</th>
@@ -383,7 +408,7 @@
       <div class="table-wrap">
         <table>
           <thead><tr>
-            <th style="width:90px">CAM</th>
+            <th style="width:130px">CAM</th>
             <th class="num">Nb Espèces</th>
             <th class="num">Nb Traite</th>
             <th class="num">Nb Chèque</th>
@@ -393,6 +418,21 @@
         </table>
       </div>
     </div>
+
+    <div id="tab-sites" class="tab-panel">
+      <div class="table-wrap">
+        <table>
+          <thead><tr>
+            <th style="width:100px">Site</th>
+            <th class="num">Nb CAMs</th>
+            <th class="num">Nb opérations</th>
+            <th class="num">Total (DT)</th>
+          </tr></thead>
+          <tbody id="sites-body"></tbody>
+        </table>
+      </div>
+    </div>
+
   </div>
 
   <div id="loading" style="display:none" class="state-msg">
@@ -440,6 +480,14 @@ async function sendFile(file) {
   }
 }
 
+function siteBadge(site) {
+  return `<span class="site-badge site-${site}">${site}</span>`;
+}
+
+function camCell(cam, site) {
+  return `<span class="cam-badge">${cam}</span>${siteBadge(site)}`;
+}
+
 function render(data) {
   document.getElementById('loading').style.display = 'none';
 
@@ -457,7 +505,7 @@ function render(data) {
   document.getElementById('s-count').textContent = fmtI(data.grand_count);
   document.getElementById('s-skip').textContent = `${data.lines_parsed} lignes analysées`;
   document.getElementById('s-cams').textContent = data.active_cams;
-  document.getElementById('s-leader').textContent = data.rows[0].cam;
+  document.getElementById('s-leader').innerHTML = camCell(data.rows[0].cam, data.rows[0].site);
   document.getElementById('s-leader-amt').textContent = fmt(data.rows[0].total) + ' DT';
   document.getElementById('stats-row').style.display = 'grid';
 
@@ -474,7 +522,7 @@ function render(data) {
 
     rb.innerHTML += `<tr>
       <td><span class="rank ${rankCls}">${r.rank}</span></td>
-      <td><span class="cam-badge">${r.cam}</span></td>
+      <td>${camCell(r.cam, r.site)}</td>
       <td>
         <div class="bars">
           ${espPct > 0 ? `<div class="bar-row"><span class="bar-label" style="color:var(--teal);font-weight:700">E</span><div class="bar-track"><div class="bar-fill" style="width:${espPct}%;background:var(--teal)"></div></div></div>` : ''}
@@ -492,7 +540,7 @@ function render(data) {
   db.innerHTML = '';
   data.rows.forEach(r => {
     db.innerHTML += `<tr>
-      <td><span class="cam-badge">${r.cam}</span></td>
+      <td>${camCell(r.cam, r.site)}</td>
       <td class="num">${r.esp > 0 ? `<span class="pill pill-esp">${fmt(r.esp)}</span>` : '<span style="color:var(--text3)">—</span>'}</td>
       <td class="num">${r.trt > 0 ? `<span class="pill pill-trt">${fmt(r.trt)}</span>` : '<span style="color:var(--text3)">—</span>'}</td>
       <td class="num">${r.chq > 0 ? `<span class="pill pill-chq">${fmt(r.chq)}</span>` : '<span style="color:var(--text3)">—</span>'}</td>
@@ -505,7 +553,7 @@ function render(data) {
   ob.innerHTML = '';
   data.rows.forEach(r => {
     ob.innerHTML += `<tr>
-      <td><span class="cam-badge">${r.cam}</span></td>
+      <td>${camCell(r.cam, r.site)}</td>
       <td class="num">${r.esp_count > 0 ? `<span class="pill pill-esp">${r.esp_count}</span>` : '<span style="color:var(--text3)">—</span>'}</td>
       <td class="num">${r.trt_count > 0 ? `<span class="pill pill-trt">${r.trt_count}</span>` : '<span style="color:var(--text3)">—</span>'}</td>
       <td class="num">${r.chq_count > 0 ? `<span class="pill pill-chq">${r.chq_count}</span>` : '<span style="color:var(--text3)">—</span>'}</td>
@@ -513,12 +561,28 @@ function render(data) {
     </tr>`;
   });
 
+  // ── Sites tab ──
+  const sb = document.getElementById('sites-body');
+  sb.innerHTML = '';
+  if (data.sites_summary) {
+    const sitesSorted = Object.entries(data.sites_summary).sort((a, b) => b[1].amount - a[1].amount);
+    sitesSorted.forEach(([site, v]) => {
+      sb.innerHTML += `<tr>
+        <td>${siteBadge(site)}</td>
+        <td class="num" style="color:var(--text2)">${v.cam_count}</td>
+        <td class="num" style="color:var(--text2)">${fmtI(v.count)}</td>
+        <td class="num" style="font-weight:600">${fmt(v.amount)}</td>
+      </tr>`;
+    });
+  }
+
   document.getElementById('results-section').style.display = 'block';
 }
 
 function switchTab(name) {
+  const names = ['ranking','detail','ops','sites'];
   document.querySelectorAll('.tab-btn').forEach((b,i) => {
-    b.classList.toggle('active', ['ranking','detail','ops'][i] === name);
+    b.classList.toggle('active', names[i] === name);
   });
   document.querySelectorAll('.tab-panel').forEach(p => {
     p.classList.toggle('active', p.id === 'tab-' + name);

@@ -13,6 +13,34 @@ TYPE_MAP = {
     "CCHQR": "Chèque",
 }
 
+CAM_SITE_MAP: dict[str, str] = {
+    # SFX
+    "CAM01": "SFX", "CAM02": "SFX", "CAM03": "SFX", "CAM04": "SFX",
+    "CAM05": "SFX", "CAM06": "SFX", "CAM36": "SFX", "CAM37": "SFX",
+    "CAM38": "SFX", "CAM48": "SFX", "CAM49": "SFX",
+    # MAH
+    "CAM40": "MAH", "CAM41": "MAH", "CAM42": "MAH", "CAM43": "MAH",
+    "CAM44": "MAH",
+    # NAB
+    "CAM50": "NAB", "CAM51": "NAB", "CAM52": "NAB", "CAM53": "NAB",
+    "CAM54": "NAB",
+    # SSE
+    "CAM08": "SSE", "CAM09": "SSE", "CAM10": "SSE", "CAM11": "SSE",
+    "CAM12": "SSE", "CAM13": "SSE", "CAM14": "SSE", "CAM15": "SSE",
+    "CAM46": "SSE",
+    # TUN
+    "CAM16": "TUN", "CAM17": "TUN", "CAM18": "TUN", "CAM19": "TUN",
+    "CAM20": "TUN", "CAM21": "TUN", "CAM22": "TUN", "CAM23": "TUN",
+    "CAM24": "TUN", "CAM25": "TUN", "CAM26": "TUN", "CAM27": "TUN",
+    "CAM29": "TUN", "CAM30": "TUN", "CAM31": "TUN",
+}
+
+
+def get_site(cam: str | None) -> str:
+    if cam is None:
+        return "Inconnu"
+    return CAM_SITE_MAP.get(cam, "Inconnu")
+
 def parse_lines(text: str):
     results = []
     for line in text.splitlines():
@@ -98,6 +126,7 @@ async def upload(file: UploadFile = File(...)):
         [
             {
                 "cam": cam,
+                "site": get_site(cam),
                 "total": round(v["total"], 3),
                 "total_count": v["count"],
                 "esp":       round(v["by_type"].get("Espèces", {}).get("amount", 0.0), 3),
@@ -127,6 +156,23 @@ async def upload(file: UploadFile = File(...)):
         all_types_summary[r["type_label"]]["amount"] += r["amount"]
         all_types_summary[r["type_label"]]["count"]  += 1
 
+    # Sites summary
+    sites_acc: dict[str, dict] = defaultdict(lambda: {"amount": 0.0, "count": 0, "cams": set()})
+    for cam, v in cam_data.items():
+        site = get_site(cam)
+        sites_acc[site]["amount"] += v["total"]
+        sites_acc[site]["count"]  += v["count"]
+        sites_acc[site]["cams"].add(cam)
+
+    sites_summary = {
+        k: {
+            "amount":    round(v["amount"], 3),
+            "count":     v["count"],
+            "cam_count": len(v["cams"]),
+        }
+        for k, v in sorted(sites_acc.items())
+    }
+
     return JSONResponse({
         "rows":         ranked,
         "grand_total":  round(sum(r["amount"] for r in matched_rows), 3),
@@ -138,5 +184,6 @@ async def upload(file: UploadFile = File(...)):
             k: {"amount": round(v["amount"], 3), "count": v["count"]}
             for k, v in all_types_summary.items()
         },
+        "sites_summary": sites_summary,
         "filename": file.filename,
     })
