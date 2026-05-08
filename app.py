@@ -7,11 +7,6 @@ from collections import defaultdict
 app = FastAPI()
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
-TARGET_CAMS = {
-    "CAM01", "CAM02", "CAM03", "CAM04", "CAM05", "CAM06",
-    "CAM36", "CAM37", "CAM38", "CAM48", "CAM49"
-}
-
 TYPE_MAP = {
     "CESP":  "Espèces",
     "CTRT":  "Traite",
@@ -82,12 +77,12 @@ async def upload(file: UploadFile = File(...)):
         "by_type": defaultdict(lambda: {"amount": 0.0, "count": 0}),
     })
 
-    unmatched_rows = []
-    matched_rows   = []
+    skipped_rows = []
+    matched_rows = []
 
     for r in rows:
         cam = r["cam"]
-        if cam in TARGET_CAMS:
+        if cam is not None:
             d = cam_data[cam]
             d["total"]  += r["amount"]
             d["count"]  += 1
@@ -96,15 +91,21 @@ async def upload(file: UploadFile = File(...)):
             t["count"]  += 1
             matched_rows.append(r)
         else:
-            unmatched_rows.append(r)
+            skipped_rows.append(r)
 
-    # Build ranked list
+    # Build ranked list with flat per-type fields expected by the frontend
     ranked = sorted(
         [
             {
                 "cam": cam,
                 "total": round(v["total"], 3),
-                "count": v["count"],
+                "total_count": v["count"],
+                "esp":       round(v["by_type"].get("Espèces", {}).get("amount", 0.0), 3),
+                "trt":       round(v["by_type"].get("Traite",  {}).get("amount", 0.0), 3),
+                "chq":       round(v["by_type"].get("Chèque",  {}).get("amount", 0.0), 3),
+                "esp_count": v["by_type"].get("Espèces", {}).get("count", 0),
+                "trt_count": v["by_type"].get("Traite",  {}).get("count", 0),
+                "chq_count": v["by_type"].get("Chèque",  {}).get("count", 0),
                 "by_type": {
                     k: {"amount": round(vt["amount"], 3), "count": vt["count"]}
                     for k, vt in v["by_type"].items()
@@ -124,14 +125,15 @@ async def upload(file: UploadFile = File(...)):
     all_types_summary = defaultdict(lambda: {"amount": 0.0, "count": 0})
     for r in matched_rows:
         all_types_summary[r["type_label"]]["amount"] += r["amount"]
-        all_types_summary[r["type_label"]]["count"]  += r["count"] if "count" in r else 1
+        all_types_summary[r["type_label"]]["count"]  += 1
 
     return JSONResponse({
-        "ranked": ranked,
-        "total_rows": len(rows),
-        "matched_rows": len(matched_rows),
-        "unmatched_rows": len(unmatched_rows),
-        "grand_total": round(sum(r["amount"] for r in matched_rows), 3),
+        "rows":         ranked,
+        "grand_total":  round(sum(r["amount"] for r in matched_rows), 3),
+        "grand_count":  len(matched_rows),
+        "lines_parsed": len(rows),
+        "active_cams":  len(cam_data),
+        "skipped_rows": len(skipped_rows),
         "types_summary": {
             k: {"amount": round(v["amount"], 3), "count": v["count"]}
             for k, v in all_types_summary.items()
