@@ -426,6 +426,8 @@
             <th style="width:100px">Site</th>
             <th class="num">Nb CAMs</th>
             <th class="num">Nb opérations</th>
+            <th class="num">Ops sans CAM</th>
+            <th class="num">Sans CAM (DT)</th>
             <th class="num">Total (DT)</th>
           </tr></thead>
           <tbody id="sites-body"></tbody>
@@ -440,7 +442,7 @@
     Analyse en cours…
   </div>
   <div id="empty-msg" style="display:none" class="state-msg">
-    Aucune ligne valide (avec référence CAM) trouvée dans ce fichier.
+    Aucune ligne valide trouvée dans ce fichier.
   </div>
 
 </main>
@@ -491,7 +493,9 @@ function camCell(cam, site) {
 function render(data) {
   document.getElementById('loading').style.display = 'none';
 
-  if (!data.rows || data.rows.length === 0) {
+  const hasCamRows = !!(data.rows && data.rows.length);
+  const hasSiteRows = !!(data.sites_summary && Object.keys(data.sites_summary).length);
+  if (!hasCamRows && !hasSiteRows) {
     document.getElementById('empty-msg').style.display = 'block';
     return;
   }
@@ -505,11 +509,16 @@ function render(data) {
   document.getElementById('s-count').textContent = fmtI(data.grand_count);
   document.getElementById('s-skip').textContent = `${data.lines_parsed} lignes analysées`;
   document.getElementById('s-cams').textContent = data.active_cams;
-  document.getElementById('s-leader').innerHTML = camCell(data.rows[0].cam, data.rows[0].site);
-  document.getElementById('s-leader-amt').textContent = fmt(data.rows[0].total) + ' DT';
+  if (hasCamRows) {
+    document.getElementById('s-leader').innerHTML = camCell(data.rows[0].cam, data.rows[0].site);
+    document.getElementById('s-leader-amt').textContent = fmt(data.rows[0].total) + ' DT';
+  } else {
+    document.getElementById('s-leader').textContent = '—';
+    document.getElementById('s-leader-amt').textContent = '0.000 DT';
+  }
   document.getElementById('stats-row').style.display = 'grid';
 
-  const maxTotal = data.rows[0].total;
+  const maxTotal = hasCamRows ? data.rows[0].total : 0;
 
   // ── Ranking tab ──
   const rb = document.getElementById('ranking-body');
@@ -571,6 +580,8 @@ function render(data) {
         <td>${siteBadge(site)}</td>
         <td class="num" style="color:var(--text2)">${v.cam_count}</td>
         <td class="num" style="color:var(--text2)">${fmtI(v.count)}</td>
+        <td class="num" style="color:var(--text2)">${fmtI(v.site_only_count ?? 0)}</td>
+        <td class="num" style="color:var(--text2)">${fmt(v.site_only_amount ?? 0)}</td>
         <td class="num" style="font-weight:600">${fmt(v.amount)}</td>
       </tr>`;
     });

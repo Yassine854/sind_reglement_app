@@ -17,7 +17,7 @@ Puis ouvrir **http://localhost:8000**
    - **Résumé global** : total réglé, nb transactions, CAMs actives
    - **Par type** : Espèces (CESP), Traite (CTRT), Chèque (CCHQR)
    - **Classement des CAMs** : rang, montant, site d'appartenance, répartition par type
-   - **Par site** : totaux regroupés par site (SFX, MAH, NAB, SSE, TUN)
+   - **Par site** : totaux regroupés par site (SFX, MAH, NAB, SSE, TUN), y compris les lignes sans CAM explicite si le site est présent
 
 ## 🗺️ Sites et CAMs
 
