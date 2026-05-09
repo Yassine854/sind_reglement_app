@@ -24,7 +24,7 @@ class SiteAggregationTests(unittest.TestCase):
         self.assertIn("NAB", payload["sites_summary"])
         self.assertIn("SFX", payload["sites_summary"])
         self.assertEqual(payload["sites_summary"]["NAB"]["count"], 2)
-        self.assertEqual(payload["sites_summary"]["NAB"]["site_only_count"], 2)
+        self.assertEqual(payload["sites_summary"]["NAB"]["trt_count"], 2)
         self.assertEqual(payload["sites_summary"]["NAB"]["cam_count"], 0)
 
     def test_cam_rows_and_site_only_rows_accumulate_together_per_site(self):
@@ -40,7 +40,7 @@ class SiteAggregationTests(unittest.TestCase):
 
         self.assertEqual(payload["active_cams"], 1)
         self.assertEqual(payload["sites_summary"]["NAB"]["cam_count"], 1)
-        self.assertEqual(payload["sites_summary"]["NAB"]["site_only_count"], 1)
+        self.assertEqual(payload["sites_summary"]["NAB"]["trt_count"], 2)
         self.assertEqual(payload["sites_summary"]["NAB"]["count"], 2)
         self.assertAlmostEqual(payload["sites_summary"]["NAB"]["amount"], 1460.346, places=3)
 
