@@ -13,6 +13,8 @@ TYPE_MAP = {
     "CCHQR": "Chèque",
 }
 
+VALID_SITES = {"SFX", "MAH", "NAB", "SSE", "TUN"}
+
 CAM_SITE_MAP: dict[str, str] = {
     # SFX
     "CAM01": "SFX", "CAM02": "SFX", "CAM03": "SFX", "CAM04": "SFX",
@@ -42,6 +44,13 @@ def get_site(cam: str | None) -> str:
         return "Inconnu"
     return CAM_SITE_MAP.get(cam, "Inconnu")
 
+
+def normalize_site(site: str | None) -> str:
+    if site is None:
+        return "Inconnu"
+    site = site.strip().upper()
+    return site if site in VALID_SITES else "Inconnu"
+
 def parse_lines(text: str):
     results = []
     for line in text.splitlines():
@@ -54,6 +63,7 @@ def parse_lines(text: str):
 
         code = parts[0]          # e.g. CESP-26-03-0001025
         ref2 = parts[1]          # e.g. 26-99-CAM39-00159  (may be empty)
+        site = parts[4]          # e.g. NAB, SFX
         try:
             amount = float(parts[-1])
         except ValueError:
@@ -75,6 +85,7 @@ def parse_lines(text: str):
         results.append({
             "code": code,
             "cam": cam,
+            "site": normalize_site(site),
             "type_key": prefix,
             "type_label": TYPE_MAP[prefix],
             "amount": amount,
@@ -89,16 +100,7 @@ async def index():
         return f.read()
 
 
-@app.post("/upload")
-async def upload(file: UploadFile = File(...)):
-    content = await file.read()
-    try:
-        text = content.decode("utf-8")
-    except UnicodeDecodeError:
-        text = content.decode("latin-1")
-
-    rows = parse_lines(text)
-
+def build_upload_payload(rows: list[dict], filename: str) -> dict:
     # ── totals per CAM × type ──────────────────────────────────────────────
     cam_data: dict[str, dict] = defaultdict(lambda: {
         "total": 0.0,
@@ -106,8 +108,7 @@ async def upload(file: UploadFile = File(...)):
         "by_type": defaultdict(lambda: {"amount": 0.0, "count": 0}),
     })
 
-    skipped_rows = []
-    matched_rows = []
+    cam_rows = []
 
     for r in rows:
         cam = r["cam"]
@@ -118,9 +119,7 @@ async def upload(file: UploadFile = File(...)):
             t = d["by_type"][r["type_label"]]
             t["amount"] += r["amount"]
             t["count"]  += 1
-            matched_rows.append(r)
-        else:
-            skipped_rows.append(r)
+            cam_rows.append(r)
 
     # Build ranked list with flat per-type fields expected by the frontend
     ranked = sorted(
@@ -153,38 +152,69 @@ async def upload(file: UploadFile = File(...)):
 
     # Summary stats
     all_types_summary = defaultdict(lambda: {"amount": 0.0, "count": 0})
-    for r in matched_rows:
+    for r in rows:
         all_types_summary[r["type_label"]]["amount"] += r["amount"]
         all_types_summary[r["type_label"]]["count"]  += 1
 
     # Sites summary
-    sites_acc: dict[str, dict] = defaultdict(lambda: {"amount": 0.0, "count": 0, "cams": set()})
-    for cam, v in cam_data.items():
-        site = get_site(cam)
-        sites_acc[site]["amount"] += v["total"]
-        sites_acc[site]["count"]  += v["count"]
-        sites_acc[site]["cams"].add(cam)
+    sites_acc: dict[str, dict] = defaultdict(
+        lambda: {
+            "amount": 0.0,
+            "count": 0,
+            "cams": set(),
+            "site_only_count": 0,
+            "site_only_amount": 0.0,
+        }
+    )
+    for r in rows:
+        cam = r["cam"]
+        site = get_site(cam) if cam is not None else r["site"]
+        sites_acc[site]["amount"] += r["amount"]
+        sites_acc[site]["count"] += 1
+        if cam is not None:
+            sites_acc[site]["cams"].add(cam)
+        else:
+            sites_acc[site]["site_only_count"] += 1
+            sites_acc[site]["site_only_amount"] += r["amount"]
 
     sites_summary = {
         k: {
             "amount":    round(v["amount"], 3),
             "count":     v["count"],
             "cam_count": len(v["cams"]),
+            "site_only_count": v["site_only_count"],
+            "site_only_amount": round(v["site_only_amount"], 3),
         }
         for k, v in sorted(sites_acc.items())
     }
 
-    return JSONResponse({
+    return {
         "rows":         ranked,
-        "grand_total":  round(sum(r["amount"] for r in matched_rows), 3),
-        "grand_count":  len(matched_rows),
+        "grand_total":  round(sum(r["amount"] for r in rows), 3),
+        "grand_count":  len(rows),
         "lines_parsed": len(rows),
         "active_cams":  len(cam_data),
-        "skipped_rows": len(skipped_rows),
+        "skipped_rows": len([r for r in rows if r["cam"] is None and r["site"] == "Inconnu"]),
+        "rows_without_cam": len([r for r in rows if r["cam"] is None]),
+        "rows_without_cam_with_site": len([r for r in rows if r["cam"] is None and r["site"] != "Inconnu"]),
+        "rows_with_cam": len(cam_rows),
         "types_summary": {
             k: {"amount": round(v["amount"], 3), "count": v["count"]}
             for k, v in all_types_summary.items()
         },
         "sites_summary": sites_summary,
-        "filename": file.filename,
-    })
+        "filename": filename,
+    }
+
+
+@app.post("/upload")
+async def upload(file: UploadFile = File(...)):
+    content = await file.read()
+    try:
+        text = content.decode("utf-8")
+    except UnicodeDecodeError:
+        text = content.decode("latin-1")
+
+    rows = parse_lines(text)
+
+    return JSONResponse(build_upload_payload(rows, file.filename))
