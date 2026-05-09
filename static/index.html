@@ -425,9 +425,13 @@
           <thead><tr>
             <th style="width:100px">Site</th>
             <th class="num">Nb CAMs</th>
-            <th class="num">Nb opérations</th>
-            <th class="num">Ops sans CAM</th>
-            <th class="num">Sans CAM (DT)</th>
+            <th class="num">Nb Espèces</th>
+            <th class="num">Nb Traite</th>
+            <th class="num">Nb Chèque</th>
+            <th class="num">Total ops</th>
+            <th class="num">Espèces (DT)</th>
+            <th class="num">Traite (DT)</th>
+            <th class="num">Chèque (DT)</th>
             <th class="num">Total (DT)</th>
           </tr></thead>
           <tbody id="sites-body"></tbody>
@@ -579,9 +583,13 @@ function render(data) {
       sb.innerHTML += `<tr>
         <td>${siteBadge(site)}</td>
         <td class="num" style="color:var(--text2)">${v.cam_count}</td>
-        <td class="num" style="color:var(--text2)">${fmtI(v.count)}</td>
-        <td class="num" style="color:var(--text2)">${fmtI(v.site_only_count ?? 0)}</td>
-        <td class="num" style="color:var(--text2)">${fmt(v.site_only_amount ?? 0)}</td>
+        <td class="num">${v.esp_count > 0 ? `<span class="pill pill-esp">${fmtI(v.esp_count)}</span>` : '<span style="color:var(--text3)">—</span>'}</td>
+        <td class="num">${v.trt_count > 0 ? `<span class="pill pill-trt">${fmtI(v.trt_count)}</span>` : '<span style="color:var(--text3)">—</span>'}</td>
+        <td class="num">${v.chq_count > 0 ? `<span class="pill pill-chq">${fmtI(v.chq_count)}</span>` : '<span style="color:var(--text3)">—</span>'}</td>
+        <td class="num" style="font-weight:600">${fmtI(v.count)}</td>
+        <td class="num">${v.esp_amount > 0 ? `<span class="pill pill-esp">${fmt(v.esp_amount)}</span>` : '<span style="color:var(--text3)">—</span>'}</td>
+        <td class="num">${v.trt_amount > 0 ? `<span class="pill pill-trt">${fmt(v.trt_amount)}</span>` : '<span style="color:var(--text3)">—</span>'}</td>
+        <td class="num">${v.chq_amount > 0 ? `<span class="pill pill-chq">${fmt(v.chq_amount)}</span>` : '<span style="color:var(--text3)">—</span>'}</td>
         <td class="num" style="font-weight:600">${fmt(v.amount)}</td>
       </tr>`;
     });

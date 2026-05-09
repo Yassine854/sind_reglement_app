@@ -162,8 +162,12 @@ def build_upload_payload(rows: list[dict], filename: str) -> dict:
             "amount": 0.0,
             "count": 0,
             "cams": set(),
-            "site_only_count": 0,
-            "site_only_amount": 0.0,
+            "esp_count": 0,
+            "trt_count": 0,
+            "chq_count": 0,
+            "esp_amount": 0.0,
+            "trt_amount": 0.0,
+            "chq_amount": 0.0,
         }
     )
     for r in rows:
@@ -173,17 +177,28 @@ def build_upload_payload(rows: list[dict], filename: str) -> dict:
         sites_acc[site]["count"] += 1
         if cam is not None:
             sites_acc[site]["cams"].add(cam)
-        else:
-            sites_acc[site]["site_only_count"] += 1
-            sites_acc[site]["site_only_amount"] += r["amount"]
+        label = r["type_label"]
+        if label == "Espèces":
+            sites_acc[site]["esp_count"] += 1
+            sites_acc[site]["esp_amount"] += r["amount"]
+        elif label == "Traite":
+            sites_acc[site]["trt_count"] += 1
+            sites_acc[site]["trt_amount"] += r["amount"]
+        elif label == "Chèque":
+            sites_acc[site]["chq_count"] += 1
+            sites_acc[site]["chq_amount"] += r["amount"]
 
     sites_summary = {
         k: {
-            "amount":    round(v["amount"], 3),
-            "count":     v["count"],
-            "cam_count": len(v["cams"]),
-            "site_only_count": v["site_only_count"],
-            "site_only_amount": round(v["site_only_amount"], 3),
+            "amount":     round(v["amount"], 3),
+            "count":      v["count"],
+            "cam_count":  len(v["cams"]),
+            "esp_count":  v["esp_count"],
+            "trt_count":  v["trt_count"],
+            "chq_count":  v["chq_count"],
+            "esp_amount": round(v["esp_amount"], 3),
+            "trt_amount": round(v["trt_amount"], 3),
+            "chq_amount": round(v["chq_amount"], 3),
         }
         for k, v in sorted(sites_acc.items())
     }
