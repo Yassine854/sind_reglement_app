@@ -1,7 +1,6 @@
 from collections import defaultdict
 from datetime import date, datetime
 import os
-from pathlib import Path
 import re
 
 from fastapi import FastAPI, File, Query, UploadFile
@@ -59,17 +58,6 @@ def normalize_site(site: str | None) -> str:
     return site if site in VALID_SITES else "Inconnu"
 
 
-
-def get_current_reglement_file() -> Path:
-    return Path(os.getenv("REGLEMENT_CURRENT_FILE", DEFAULT_CURRENT_REGLEMENT_FILE))
-
-
-
-def get_history_reglements_dir() -> Path:
-    return Path(os.getenv("REGLEMENT_HISTORY_DIR", DEFAULT_HISTORY_REGLEMENTS_DIR))
-
-
-
 def parse_reglement_date(value: str | None) -> date | None:
     if value is None:
         return None
@@ -83,13 +71,14 @@ def parse_reglement_date(value: str | None) -> date | None:
 
 
 
-def read_text_file(path: Path) -> tuple[str | None, str | None]:
+def read_text_file(path: str) -> tuple[str | None, str | None]:
     try:
-        for encoding in ("utf-8", "latin-1"):
-            try:
-                return path.read_text(encoding=encoding), None
-            except UnicodeDecodeError:
-                continue
+        with open(path, "rb") as f:
+            content = f.read()
+        try:
+            return content.decode("utf-8"), None
+        except UnicodeDecodeError:
+            return content.decode("latin-1"), None
     except FileNotFoundError:
         return None, f"Fichier introuvable : {path}"
     except IsADirectoryError:
@@ -100,25 +89,32 @@ def read_text_file(path: Path) -> tuple[str | None, str | None]:
 
 
 
-def list_reglement_files(directory: Path) -> tuple[list[Path], list[str]]:
-    if not directory.exists():
+def list_reglement_files(directory: str) -> tuple[list[str], list[str]]:
+    if not os.path.exists(directory):
         return [], [f"Dossier introuvable : {directory}"]
-    if not directory.is_dir():
+    if not os.path.isdir(directory):
         return [], [f"Chemin invalide (pas un dossier) : {directory}"]
 
-    files = sorted(
-        [path for path in directory.iterdir() if path.is_file() and path.suffix.lower() == ".txt"],
-        key=lambda path: path.name.lower(),
-    )
+    try:
+        files = sorted(
+            [
+                os.path.join(directory, filename)
+                for filename in os.listdir(directory)
+                if filename.lower().endswith(".txt")
+            ],
+            key=lambda path: path.lower(),
+        )
+    except OSError:
+        return [], [f"Impossible de lire le dossier : {directory}"]
     return files, []
 
 
 
-def unique_paths(paths: list[Path]) -> list[Path]:
-    ordered: list[Path] = []
+def unique_paths(paths: list[str]) -> list[str]:
+    ordered: list[str] = []
     seen: set[str] = set()
     for path in paths:
-        key = str(path).lower()
+        key = path.lower()
         if key in seen:
             continue
         seen.add(key)
@@ -127,7 +123,7 @@ def unique_paths(paths: list[Path]) -> list[Path]:
 
 
 
-def load_rows_from_paths(paths: list[Path]) -> tuple[list[dict], list[str], list[str]]:
+def load_rows_from_paths(paths: list[str]) -> tuple[list[dict], list[str], list[str]]:
     rows: list[dict] = []
     source_files: list[str] = []
     warnings: list[str] = []
@@ -137,7 +133,7 @@ def load_rows_from_paths(paths: list[Path]) -> tuple[list[dict], list[str], list
         if error:
             warnings.append(error)
             continue
-        source_files.append(str(path))
+        source_files.append(path)
         rows.extend(parse_lines(text or ""))
 
     return rows, source_files, warnings
@@ -183,7 +179,7 @@ def parse_lines(text: str):
         # Le 4e champ contient la date de règlement attendue ; on replie sur le 3e si besoin.
         reglement_date = parse_reglement_date(parts[3]) or parse_reglement_date(parts[2])
         try:
-            amount = float(parts[-1])
+            amount = float(parts[-1].replace(",", "."))
         except ValueError:
             continue
 
@@ -355,9 +351,9 @@ def build_upload_payload(
 
 @app.get("/api/default")
 async def get_default_dashboard():
-    current_file = get_current_reglement_file()
+    current_file = DEFAULT_CURRENT_REGLEMENT_FILE
     rows, source_files, warnings = load_rows_from_paths([current_file])
-    label = f"Mois en cours · {current_file.name}"
+    label = f"Mois en cours · {os.path.basename(current_file)}"
     return JSONResponse(
         build_upload_payload(
             rows,
@@ -383,8 +379,8 @@ async def get_dashboard_for_range(
     if start > end:
         return JSONResponse({"detail": "La date de début doit être antérieure ou égale à la date de fin."}, status_code=400)
 
-    current_file = get_current_reglement_file()
-    history_dir = get_history_reglements_dir()
+    current_file = DEFAULT_CURRENT_REGLEMENT_FILE
+    history_dir = DEFAULT_HISTORY_REGLEMENTS_DIR
     history_files, warnings = list_reglement_files(history_dir)
     rows, source_files, load_warnings = load_rows_from_paths(history_files + [current_file])
     filtered_rows = filter_rows_by_date(rows, start, end)
@@ -400,6 +396,11 @@ async def get_dashboard_for_range(
             warnings=warnings + load_warnings,
         )
     )
+
+
+@app.get("/api/filter")
+async def get_dashboard_for_filter(start: str, end: str):
+    return await get_dashboard_for_range(start_date=start, end_date=end)
 
 
 @app.post("/upload")
