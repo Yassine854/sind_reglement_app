@@ -135,6 +135,63 @@
   }
   .upload-btn:hover { opacity: 0.88; }
 
+  .filter-card {
+    background: var(--surface);
+    border: 0.5px solid var(--border);
+    border-radius: var(--radius);
+    padding: 1rem 1.25rem;
+    margin-bottom: 1rem;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    flex-wrap: wrap;
+  }
+  .filter-form {
+    display: flex;
+    align-items: flex-end;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  .filter-field {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    color: var(--text2);
+    font-size: 12px;
+    font-weight: 500;
+  }
+  .filter-field input {
+    min-width: 150px;
+    padding: 9px 12px;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border2);
+    background: var(--surface);
+    color: var(--text);
+    font: inherit;
+  }
+  .btn-secondary {
+    background: var(--surface2);
+    color: var(--text);
+  }
+  .header-badges {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+  .warning-banner {
+    display: none;
+    background: var(--amber-light);
+    color: var(--amber);
+    border-radius: var(--radius);
+    padding: 12px 14px;
+    margin-bottom: 1rem;
+    font-size: 13px;
+    line-height: 1.5;
+  }
+
   /* ── Stats row ── */
   .stats-row {
     display: grid;
@@ -306,6 +363,9 @@
   /* ── Responsive ── */
   @media (max-width: 700px) {
     .stats-row { grid-template-columns: repeat(2,1fr); }
+    .filter-card { padding: 1rem; }
+    .filter-form, .header-badges { width: 100%; }
+    .filter-field input { min-width: 100%; }
     main { padding: 1rem; }
     th, td { padding: 8px 10px; font-size: 12px; }
   }
@@ -318,10 +378,34 @@
     <div class="logo-dot"></div>
     Analyse Règlements CAM
   </div>
-  <div id="file-badge"></div>
+  <div class="header-badges">
+    <div id="file-badge"></div>
+    <div id="range-badge" class="header-meta"></div>
+  </div>
 </header>
 
 <main>
+
+  <div class="filter-card">
+    <div>
+      <div class="upload-title">Chargement automatique du mois en cours</div>
+      <div class="upload-sub">Par défaut, le dashboard lit REGLEMENT.txt depuis le poste Windows, et vous pouvez ensuite filtrer une période multi-fichiers.</div>
+    </div>
+    <div class="filter-form">
+      <label class="filter-field">
+        <span>Du</span>
+        <input type="date" id="start-date">
+      </label>
+      <label class="filter-field">
+        <span>Au</span>
+        <input type="date" id="end-date">
+      </label>
+      <button class="upload-btn" id="apply-filter" type="button">Filtrer</button>
+      <button class="upload-btn btn-secondary" id="reset-filter" type="button">Mois en cours</button>
+    </div>
+  </div>
+
+  <div id="warning-banner" class="warning-banner"></div>
 
   <!-- Upload zone -->
   <div class="upload-card" id="dropzone" onclick="document.getElementById('fileInput').click()">
@@ -329,8 +413,8 @@
     <div class="upload-icon">
       <svg viewBox="0 0 24 24"><path d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M16 12l-4-4-4 4M12 8v8"/></svg>
     </div>
-    <div class="upload-title">Importer le fichier de règlements</div>
-    <div class="upload-sub">Fichier .txt mensuel — séparateur point-virgule</div>
+    <div class="upload-title">Importer un fichier manuellement</div>
+    <div class="upload-sub">Le chargement automatique reste prioritaire, mais vous pouvez toujours analyser un fichier .txt mensuel.</div>
     <button class="upload-btn" onclick="event.stopPropagation();" onpointerdown="document.getElementById('fileInput').click()">Choisir un fichier</button>
   </div>
 
@@ -446,7 +530,7 @@
     Analyse en cours…
   </div>
   <div id="empty-msg" style="display:none" class="state-msg">
-    Aucune ligne valide trouvée dans ce fichier.
+    Aucune ligne valide trouvée pour cette sélection.
   </div>
 
 </main>
@@ -454,24 +538,95 @@
 <script>
 const fmt = n => n.toLocaleString('fr-TN', {minimumFractionDigits:3, maximumFractionDigits:3});
 const fmtI = n => n.toLocaleString('fr-TN');
+const dz = document.getElementById('dropzone');
+const emptyMsg = document.getElementById('empty-msg');
+const warningBanner = document.getElementById('warning-banner');
+const rangeBadge = document.getElementById('range-badge');
+const fileBadge = document.getElementById('file-badge');
+const startDateInput = document.getElementById('start-date');
+const endDateInput = document.getElementById('end-date');
+
+function setLoading(isLoading) {
+  document.getElementById('loading').style.display = isLoading ? 'block' : 'none';
+  if (isLoading) {
+    document.getElementById('results-section').style.display = 'none';
+    document.getElementById('stats-row').style.display = 'none';
+    emptyMsg.style.display = 'none';
+  }
+}
+
+function showWarning(messages) {
+  if (!messages || !messages.length) {
+    warningBanner.style.display = 'none';
+    warningBanner.innerHTML = '';
+    return;
+  }
+  warningBanner.style.display = 'block';
+  warningBanner.innerHTML = messages.map(msg => `<div>${msg}</div>`).join('');
+}
+
+function showEmpty(message) {
+  emptyMsg.textContent = message;
+  emptyMsg.style.display = 'block';
+}
+
+async function fetchDashboard(url) {
+  setLoading(true);
+  showWarning([]);
+  try {
+    const res = await fetch(url);
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.detail || 'Erreur lors du chargement des règlements.');
+    }
+    render(data);
+  } catch (error) {
+    setLoading(false);
+    document.getElementById('stats-row').style.display = 'none';
+    document.getElementById('results-section').style.display = 'none';
+    showWarning([error.message || 'Erreur lors du chargement des règlements.']);
+    showEmpty('Impossible de charger les données demandées.');
+  }
+}
+
+function loadDefaultData() {
+  startDateInput.value = '';
+  endDateInput.value = '';
+  return fetchDashboard('/api/default');
+}
+
+function applyDateFilter() {
+  const startDate = startDateInput.value;
+  const endDate = endDateInput.value;
+  if (!startDate || !endDate) {
+    showWarning(['Veuillez renseigner les deux dates avant d'appliquer le filtre.']);
+    showEmpty('Sélectionnez une période pour filtrer les règlements.');
+    document.getElementById('stats-row').style.display = 'none';
+    document.getElementById('results-section').style.display = 'none';
+    return;
+  }
+  const params = new URLSearchParams({ start_date: startDate, end_date: endDate });
+  return fetchDashboard(`/api/range?${params.toString()}`);
+}
 
 // drag & drop
-const dz = document.getElementById('dropzone');
-dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('drag'); });
-dz.addEventListener('dragleave', () => dz.classList.remove('drag'));
-dz.addEventListener('drop', e => {
-  e.preventDefault(); dz.classList.remove('drag');
-  const f = e.dataTransfer.files[0]; if(f) sendFile(f);
-});
+if (dz) {
+  dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('drag'); });
+  dz.addEventListener('dragleave', () => dz.classList.remove('drag'));
+  dz.addEventListener('drop', e => {
+    e.preventDefault(); dz.classList.remove('drag');
+    const f = e.dataTransfer.files[0]; if (f) sendFile(f);
+  });
+}
 document.getElementById('fileInput').addEventListener('change', e => {
-  if(e.target.files[0]) sendFile(e.target.files[0]);
+  if (e.target.files[0]) sendFile(e.target.files[0]);
 });
+document.getElementById('apply-filter').addEventListener('click', applyDateFilter);
+document.getElementById('reset-filter').addEventListener('click', loadDefaultData);
 
 async function sendFile(file) {
-  document.getElementById('loading').style.display = 'block';
-  document.getElementById('results-section').style.display = 'none';
-  document.getElementById('stats-row').style.display = 'none';
-  document.getElementById('empty-msg').style.display = 'none';
+  setLoading(true);
+  showWarning([]);
 
   const fd = new FormData();
   fd.append('file', file);
@@ -481,8 +636,9 @@ async function sendFile(file) {
     const data = await res.json();
     render(data);
   } catch(e) {
-    document.getElementById('loading').style.display = 'none';
-    alert('Erreur lors de l\'analyse du fichier.');
+    setLoading(false);
+    showWarning(['Erreur lors de l'analyse du fichier importé.']);
+    showEmpty('Impossible d'analyser le fichier sélectionné.');
   }
 }
 
@@ -495,24 +651,29 @@ function camCell(cam, site) {
 }
 
 function render(data) {
-  document.getElementById('loading').style.display = 'none';
+  setLoading(false);
+  showWarning(data.warnings || []);
 
   const hasCamRows = !!(data.rows && data.rows.length);
   const hasSiteRows = !!(data.sites_summary && Object.keys(data.sites_summary).length);
-  if (!hasCamRows && !hasSiteRows) {
-    document.getElementById('empty-msg').style.display = 'block';
-    return;
-  }
+  const hasAnyRows = data.grand_count > 0 || hasSiteRows;
 
-  // file badge
-  document.getElementById('file-badge').innerHTML =
-    `<span class="file-badge">${data.filename}</span>`;
+  const modeLabel = data.mode === 'date_range'
+    ? 'Période filtrée'
+    : data.mode === 'upload'
+      ? 'Import manuel'
+      : 'Mois en cours';
+  fileBadge.innerHTML = `<span class="file-badge">${modeLabel}</span>`;
 
-  // stats
-  document.getElementById('s-total').textContent = fmt(data.grand_total);
-  document.getElementById('s-count').textContent = fmtI(data.grand_count);
-  document.getElementById('s-skip').textContent = `${data.lines_parsed} lignes analysées`;
-  document.getElementById('s-cams').textContent = data.active_cams;
+  const fileCount = data.source_files && data.source_files.length
+    ? `${data.source_files.length} fichier(s)`
+    : 'Aucun fichier chargé';
+  rangeBadge.textContent = [data.source_label || data.filename, fileCount].filter(Boolean).join(' • ');
+
+  document.getElementById('s-total').textContent = fmt(data.grand_total || 0);
+  document.getElementById('s-count').textContent = fmtI(data.grand_count || 0);
+  document.getElementById('s-skip').textContent = `${data.lines_parsed || 0} lignes analysées`;
+  document.getElementById('s-cams').textContent = data.active_cams || 0;
   if (hasCamRows) {
     document.getElementById('s-leader').innerHTML = camCell(data.rows[0].cam, data.rows[0].site);
     document.getElementById('s-leader-amt').textContent = fmt(data.rows[0].total) + ' DT';
@@ -522,9 +683,17 @@ function render(data) {
   }
   document.getElementById('stats-row').style.display = 'grid';
 
+  if (!hasAnyRows) {
+    document.getElementById('results-section').style.display = 'none';
+    showEmpty(data.mode === 'date_range'
+      ? 'Aucune ligne trouvée pour la période sélectionnée.'
+      : 'Aucune ligne valide trouvée dans la source chargée.');
+    return;
+  }
+
+  emptyMsg.style.display = 'none';
   const maxTotal = hasCamRows ? data.rows[0].total : 0;
 
-  // ── Ranking tab ──
   const rb = document.getElementById('ranking-body');
   rb.innerHTML = '';
   data.rows.forEach(r => {
@@ -548,7 +717,6 @@ function render(data) {
     </tr>`;
   });
 
-  // ── Detail tab ──
   const db = document.getElementById('detail-body');
   db.innerHTML = '';
   data.rows.forEach(r => {
@@ -561,7 +729,6 @@ function render(data) {
     </tr>`;
   });
 
-  // ── Ops tab ──
   const ob = document.getElementById('ops-body');
   ob.innerHTML = '';
   data.rows.forEach(r => {
@@ -574,7 +741,6 @@ function render(data) {
     </tr>`;
   });
 
-  // ── Sites tab ──
   const sb = document.getElementById('sites-body');
   sb.innerHTML = '';
   if (data.sites_summary) {
@@ -607,6 +773,8 @@ function switchTab(name) {
     p.classList.toggle('active', p.id === 'tab-' + name);
   });
 }
+
+loadDefaultData();
 </script>
 </body>
 </html>
