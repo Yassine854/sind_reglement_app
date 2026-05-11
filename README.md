@@ -12,12 +12,24 @@ Puis ouvrir **http://localhost:8000**
 
 ## 📋 Utilisation
 
-1. Glisser-déposer ou sélectionner votre fichier `.txt` mensuel
-2. Le dashboard affiche automatiquement :
+1. Au chargement, le dashboard lit automatiquement le fichier courant :
+   - `D:\TDB SINDBAD\Fichiers Sources\REGLEMENT.txt`
+2. Vous pouvez filtrer une période avec les champs **Du / Au** :
+   - le backend charge alors tous les fichiers `.txt` de `D:\TDB SINDBAD\Fichiers Sources\Réglements`
+   - et ajoute aussi `REGLEMENT.txt` pour couvrir le mois en cours
+3. Le dashboard affiche automatiquement :
    - **Résumé global** : total réglé, nb transactions, CAMs actives
    - **Par type** : Espèces (CESP), Traite (CTRT), Chèque (CCHQR)
    - **Classement des CAMs** : rang, montant, site d'appartenance, répartition par type
    - **Par site** : totaux regroupés par site (SFX, MAH, NAB, SSE, TUN), y compris les lignes sans CAM explicite si le site est présent
+4. L'import manuel d'un fichier `.txt` reste disponible si besoin.
+
+### Variables d'environnement optionnelles
+
+Pour tester l'application sur une autre machine ou avec des fichiers temporaires, vous pouvez surcharger les chemins par défaut :
+
+- `REGLEMENT_CURRENT_FILE`
+- `REGLEMENT_HISTORY_DIR`
 
 ## 🗺️ Sites et CAMs
 
