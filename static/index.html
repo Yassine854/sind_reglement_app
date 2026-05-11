@@ -599,8 +599,8 @@ function applyDateFilter() {
   const startDate = startDateInput.value;
   const endDate = endDateInput.value;
   if (!startDate || !endDate) {
-    showWarning(['Veuillez renseigner les deux dates avant d'appliquer le filtre.']);
-    showEmpty('Sélectionnez une période pour filtrer les règlements.');
+    showWarning(["Veuillez renseigner les deux dates avant d'appliquer le filtre."]);
+    showEmpty("Sélectionnez une période pour filtrer les règlements.");
     document.getElementById('stats-row').style.display = 'none';
     document.getElementById('results-section').style.display = 'none';
     return;
@@ -637,8 +637,8 @@ async function sendFile(file) {
     render(data);
   } catch(e) {
     setLoading(false);
-    showWarning(['Erreur lors de l'analyse du fichier importé.']);
-    showEmpty('Impossible d'analyser le fichier sélectionné.');
+    showWarning(["Erreur lors de l'analyse du fichier importé."]);
+    showEmpty("Impossible d'analyser le fichier sélectionné.");
   }
 }
 
