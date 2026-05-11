@@ -180,6 +180,7 @@ def parse_lines(text: str):
         code = parts[0]
         ref2 = parts[1]
         site = parts[4]
+        # Le 4e champ contient la date de règlement attendue ; on replie sur le 3e si besoin.
         reglement_date = parse_reglement_date(parts[3]) or parse_reglement_date(parts[2])
         try:
             amount = float(parts[-1])
@@ -376,8 +377,8 @@ async def get_dashboard_for_range(
     try:
         start = parse_iso_date(start_date)
         end = parse_iso_date(end_date)
-    except ValueError as exc:
-        return JSONResponse({"detail": str(exc)}, status_code=400)
+    except ValueError:
+        return JSONResponse({"detail": "Date invalide. Format attendu AAAA-MM-JJ."}, status_code=400)
 
     if start > end:
         return JSONResponse({"detail": "La date de début doit être antérieure ou égale à la date de fin."}, status_code=400)
