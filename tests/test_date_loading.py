@@ -1,12 +1,11 @@
 import asyncio
 import json
-import os
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from app import get_dashboard_for_range, get_default_dashboard, parse_lines
+from app import get_dashboard_for_filter, get_dashboard_for_range, get_default_dashboard, parse_lines
 
 
 class ReglementDateLoadingTests(unittest.TestCase):
@@ -26,7 +25,7 @@ class ReglementDateLoadingTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            with patch.dict(os.environ, {"REGLEMENT_CURRENT_FILE": str(current_file)}, clear=False):
+            with patch("app.DEFAULT_CURRENT_REGLEMENT_FILE", str(current_file)):
                 response = asyncio.run(get_default_dashboard())
 
         payload = json.loads(response.body)
@@ -66,10 +65,12 @@ class ReglementDateLoadingTests(unittest.TestCase):
             )
 
             env = {
-                "REGLEMENT_CURRENT_FILE": str(current_file),
-                "REGLEMENT_HISTORY_DIR": str(history_dir),
+                "current": str(current_file),
+                "history": str(history_dir),
             }
-            with patch.dict(os.environ, env, clear=False):
+            with patch("app.DEFAULT_CURRENT_REGLEMENT_FILE", env["current"]), patch(
+                "app.DEFAULT_HISTORY_REGLEMENTS_DIR", env["history"]
+            ):
                 response = asyncio.run(
                     get_dashboard_for_range(start_date="2026-04-25", end_date="2026-05-25")
                 )
@@ -83,13 +84,35 @@ class ReglementDateLoadingTests(unittest.TestCase):
 
     def test_default_dashboard_returns_warning_when_file_is_missing(self):
         missing = Path("/tmp/does-not-exist/REGLEMENT.txt")
-        with patch.dict(os.environ, {"REGLEMENT_CURRENT_FILE": str(missing)}, clear=False):
+        with patch("app.DEFAULT_CURRENT_REGLEMENT_FILE", str(missing)):
             response = asyncio.run(get_default_dashboard())
 
         payload = json.loads(response.body)
         self.assertEqual(payload["grand_count"], 0)
         self.assertTrue(payload["warnings"])
         self.assertIn("Fichier introuvable", payload["warnings"][0])
+
+    def test_filter_endpoint_alias_works_with_start_and_end(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            history_dir = base / "Réglements"
+            history_dir.mkdir()
+            current_file = base / "REGLEMENT.txt"
+            current_file.write_text(
+                "CESP-26-05-0000838;26-99-CAM39-00418;20260502;20260520;BJSSE;ESP;CLS05056;;;FAC-BJS-26-00417;256.79\n",
+                encoding="utf-8",
+            )
+
+            with patch("app.DEFAULT_CURRENT_REGLEMENT_FILE", str(current_file)), patch(
+                "app.DEFAULT_HISTORY_REGLEMENTS_DIR", str(history_dir)
+            ):
+                response = asyncio.run(
+                    get_dashboard_for_filter(start_date="2026-05-01", end_date="2026-05-31")
+                )
+
+        payload = json.loads(response.body)
+        self.assertEqual(payload["mode"], "date_range")
+        self.assertEqual(payload["grand_count"], 1)
 
 
 if __name__ == "__main__":
