@@ -94,8 +94,8 @@ def read_text_file(path: Path) -> tuple[str | None, str | None]:
         return None, f"Fichier introuvable : {path}"
     except IsADirectoryError:
         return None, f"Chemin invalide (dossier) : {path}"
-    except OSError as exc:
-        return None, f"Impossible de lire {path} : {exc}"
+    except OSError:
+        return None, f"Impossible de lire le fichier : {path}"
     return None, f"Impossible de décoder le fichier : {path}"
 
 
@@ -163,7 +163,7 @@ def parse_iso_date(value: str) -> date:
     try:
         return datetime.strptime(value, "%Y-%m-%d").date()
     except ValueError as exc:
-        raise ValueError(f"Date invalide : {value}. Format attendu AAAA-MM-JJ.") from exc
+        raise ValueError("Date invalide. Format attendu AAAA-MM-JJ.") from exc
 
 
 
