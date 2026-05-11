@@ -180,7 +180,8 @@ def parse_lines(text: str):
         code = parts[0]
         ref2 = parts[1]
         site = parts[4]
-        # Le 4e champ contient la date de règlement attendue ; on replie sur le 3e si besoin.
+        # Le 4e champ porte la date de règlement quand elle est fournie ;
+        # le 3e sert de repli pour les fichiers où seule cette colonne est renseignée.
         reglement_date = parse_reglement_date(parts[3]) or parse_reglement_date(parts[2])
         try:
             amount = float(parts[-1])
