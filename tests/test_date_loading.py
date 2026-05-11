@@ -106,7 +106,9 @@ class ReglementDateLoadingTests(unittest.TestCase):
             with patch("app.DEFAULT_CURRENT_REGLEMENT_FILE", str(current_file)), patch(
                 "app.DEFAULT_HISTORY_REGLEMENTS_DIR", str(history_dir)
             ):
-                response = asyncio.run(get_dashboard_for_filter(start="2026-05-01", end="2026-05-31"))
+                response = asyncio.run(
+                    get_dashboard_for_filter(start_date="2026-05-01", end_date="2026-05-31")
+                )
 
         payload = json.loads(response.body)
         self.assertEqual(payload["mode"], "date_range")

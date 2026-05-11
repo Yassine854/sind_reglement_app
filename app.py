@@ -399,8 +399,11 @@ async def get_dashboard_for_range(
 
 
 @app.get("/api/filter")
-async def get_dashboard_for_filter(start: str, end: str):
-    return await get_dashboard_for_range(start_date=start, end_date=end)
+async def get_dashboard_for_filter(
+    start_date: str = Query(..., alias="start", description="Date de début au format AAAA-MM-JJ"),
+    end_date: str = Query(..., alias="end", description="Date de fin au format AAAA-MM-JJ"),
+):
+    return await get_dashboard_for_range(start_date=start_date, end_date=end_date)
 
 
 @app.post("/upload")
