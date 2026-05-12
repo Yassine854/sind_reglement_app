@@ -360,9 +360,44 @@
     font-weight: 500;
   }
 
+  /* ── Upload section (two columns) ── */
+  .upload-section {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1rem;
+    margin-bottom: 2rem;
+  }
+
+  /* ── Session status bar ── */
+  .session-status-bar {
+    background: var(--teal-light);
+    border: 0.5px solid var(--border);
+    border-radius: var(--radius);
+    padding: 9px 14px;
+    margin-bottom: 1rem;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    flex-wrap: wrap;
+    font-size: 12px;
+    color: var(--teal-dark);
+  }
+  .session-status-item {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+  }
+  .status-dot {
+    width: 7px; height: 7px;
+    border-radius: 50%;
+    background: var(--teal);
+    flex-shrink: 0;
+  }
+
   /* ── Responsive ── */
   @media (max-width: 700px) {
     .stats-row { grid-template-columns: repeat(2,1fr); }
+    .upload-section { grid-template-columns: 1fr; }
     .filter-card { padding: 1rem; }
     .filter-form, .header-badges { width: 100%; }
     .filter-field input { min-width: 100%; }
@@ -386,10 +421,13 @@
 
 <main>
 
+  <!-- Session status bar -->
+  <div id="session-status-bar" class="session-status-bar" style="display:none"></div>
+
   <div class="filter-card">
     <div>
-      <div class="upload-title">Chargement automatique du mois en cours</div>
-      <div class="upload-sub">Par défaut, le dashboard lit REGLEMENT.txt depuis le poste Windows, et vous pouvez ensuite filtrer une période multi-fichiers.</div>
+      <div class="upload-title">Analyse Règlements</div>
+      <div class="upload-sub">Importez le fichier du mois en cours et, si besoin, les fichiers historiques, puis filtrez par période.</div>
     </div>
     <div class="filter-form">
       <label class="filter-field">
@@ -407,15 +445,29 @@
 
   <div id="warning-banner" class="warning-banner"></div>
 
-  <!-- Upload zone -->
-  <div class="upload-card" id="dropzone" onclick="document.getElementById('fileInput').click()">
-    <input type="file" id="fileInput" accept=".txt,.csv">
-    <div class="upload-icon">
-      <svg viewBox="0 0 24 24"><path d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M16 12l-4-4-4 4M12 8v8"/></svg>
+  <!-- Upload zones -->
+  <div class="upload-section">
+
+    <div class="upload-card" id="dropzone-current" onclick="document.getElementById('fileInputCurrent').click()">
+      <input type="file" id="fileInputCurrent" accept=".txt">
+      <div class="upload-icon">
+        <svg viewBox="0 0 24 24"><path d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M16 12l-4-4-4 4M12 8v8"/></svg>
+      </div>
+      <div class="upload-title">Fichier du mois en cours</div>
+      <div class="upload-sub">Importez un fichier REGLEMENT.txt (fichier unique)</div>
+      <button class="upload-btn" onclick="event.stopPropagation();" onpointerdown="document.getElementById('fileInputCurrent').click()">Choisir un fichier</button>
     </div>
-    <div class="upload-title">Importer un fichier manuellement</div>
-    <div class="upload-sub">Le chargement automatique reste prioritaire, mais vous pouvez toujours analyser un fichier .txt mensuel.</div>
-    <button class="upload-btn" onclick="event.stopPropagation();" onpointerdown="document.getElementById('fileInput').click()">Choisir un fichier</button>
+
+    <div class="upload-card" id="dropzone-history" onclick="document.getElementById('fileInputHistory').click()">
+      <input type="file" id="fileInputHistory" accept=".txt" multiple>
+      <div class="upload-icon">
+        <svg viewBox="0 0 24 24"><path d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M16 12l-4-4-4 4M12 8v8"/></svg>
+      </div>
+      <div class="upload-title">Fichiers historiques</div>
+      <div class="upload-sub">Importez plusieurs fichiers .txt pour le filtre par période</div>
+      <button class="upload-btn" onclick="event.stopPropagation();" onpointerdown="document.getElementById('fileInputHistory').click()">Choisir des fichiers</button>
+    </div>
+
   </div>
 
   <!-- Stats row -->
@@ -538,14 +590,31 @@
 <script>
 const fmt = n => n.toLocaleString('fr-TN', {minimumFractionDigits:3, maximumFractionDigits:3});
 const fmtI = n => n.toLocaleString('fr-TN');
-const dz = document.getElementById('dropzone');
+
+// ── Session management ────────────────────────────────────────────────────────
+const LS_KEY = 'sindSessionId';
+function getOrCreateSessionId() {
+  let sid = localStorage.getItem(LS_KEY);
+  if (!sid) {
+    sid = (typeof crypto !== 'undefined' && crypto.randomUUID)
+      ? crypto.randomUUID()
+      : (Date.now().toString(36) + Math.random().toString(36).slice(2));
+    localStorage.setItem(LS_KEY, sid);
+  }
+  return sid;
+}
+let SESSION_ID = getOrCreateSessionId();
+
+// ── DOM refs ──────────────────────────────────────────────────────────────────
 const emptyMsg = document.getElementById('empty-msg');
 const warningBanner = document.getElementById('warning-banner');
 const rangeBadge = document.getElementById('range-badge');
 const fileBadge = document.getElementById('file-badge');
 const startDateInput = document.getElementById('start-date');
 const endDateInput = document.getElementById('end-date');
+const sessionStatusBar = document.getElementById('session-status-bar');
 
+// ── UI helpers ────────────────────────────────────────────────────────────────
 function setLoading(isLoading) {
   document.getElementById('loading').style.display = isLoading ? 'block' : 'none';
   if (isLoading) {
@@ -562,7 +631,7 @@ function showWarning(messages) {
     return;
   }
   warningBanner.style.display = 'block';
-  warningBanner.innerHTML = messages.map(msg => `<div>${msg}</div>`).join('');
+  warningBanner.innerHTML = messages.map(msg => '<div>' + msg + '</div>').join('');
 }
 
 function showEmpty(message) {
@@ -570,6 +639,39 @@ function showEmpty(message) {
   emptyMsg.style.display = 'block';
 }
 
+function updateSessionStatusBar(status) {
+  if (!status || !status.valid) {
+    sessionStatusBar.style.display = 'none';
+    return;
+  }
+  const parts = [];
+  if (status.has_current) {
+    const fname = status.current_filename || 'REGLEMENT.txt';
+    parts.push('<span class="session-status-item"><span class="status-dot"></span>Mensuel\u00a0: ' + fname + '</span>');
+  }
+  if (status.has_history) {
+    const count = (status.history_filenames || []).length;
+    parts.push('<span class="session-status-item"><span class="status-dot"></span>Historique\u00a0: ' + count + ' fichier(s)</span>');
+  }
+  if (status.ttl_remaining_minutes !== undefined) {
+    parts.push('<span style="color:var(--text3);margin-left:auto">Expire dans ' + status.ttl_remaining_minutes + ' min</span>');
+  }
+  sessionStatusBar.innerHTML = parts.join('');
+  sessionStatusBar.style.display = 'flex';
+}
+
+async function loadSessionStatus() {
+  try {
+    const res = await fetch('/api/session/status?session_id=' + encodeURIComponent(SESSION_ID));
+    const status = await res.json();
+    updateSessionStatusBar(status);
+    return status;
+  } catch (e) {
+    return { valid: false };
+  }
+}
+
+// ── Data loading ──────────────────────────────────────────────────────────────
 async function fetchDashboard(url) {
   setLoading(true);
   showWarning([]);
@@ -592,7 +694,7 @@ async function fetchDashboard(url) {
 function loadDefaultData() {
   startDateInput.value = '';
   endDateInput.value = '';
-  return fetchDashboard('/api/default');
+  return fetchDashboard('/api/default?session_id=' + encodeURIComponent(SESSION_ID));
 }
 
 function applyDateFilter() {
@@ -605,49 +707,103 @@ function applyDateFilter() {
     document.getElementById('results-section').style.display = 'none';
     return;
   }
-  const params = new URLSearchParams({ start_date: startDate, end_date: endDate });
-  return fetchDashboard(`/api/range?${params.toString()}`);
+  const params = new URLSearchParams({ start_date: startDate, end_date: endDate, session_id: SESSION_ID });
+  return fetchDashboard('/api/range?' + params.toString());
 }
 
-// drag & drop
-if (dz) {
-  dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('drag'); });
-  dz.addEventListener('dragleave', () => dz.classList.remove('drag'));
-  dz.addEventListener('drop', e => {
-    e.preventDefault(); dz.classList.remove('drag');
-    const f = e.dataTransfer.files[0]; if (f) sendFile(f);
-  });
-}
-document.getElementById('fileInput').addEventListener('change', e => {
-  if (e.target.files[0]) sendFile(e.target.files[0]);
-});
-document.getElementById('apply-filter').addEventListener('click', applyDateFilter);
-document.getElementById('reset-filter').addEventListener('click', loadDefaultData);
-
-async function sendFile(file) {
+// ── Upload current month file ─────────────────────────────────────────────────
+async function uploadCurrentFile(file) {
   setLoading(true);
   showWarning([]);
-
   const fd = new FormData();
   fd.append('file', file);
-
+  fd.append('session_id', SESSION_ID);
   try {
-    const res = await fetch('/upload', { method: 'POST', body: fd });
+    const res = await fetch('/api/upload/current', { method: 'POST', body: fd });
     const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || "Erreur lors de l'import.");
+    if (data.session_id) {
+      SESSION_ID = data.session_id;
+      localStorage.setItem(LS_KEY, SESSION_ID);
+    }
+    await loadSessionStatus();
     render(data);
-  } catch(e) {
+  } catch (e) {
     setLoading(false);
-    showWarning(["Erreur lors de l'analyse du fichier importé."]);
+    showWarning(["Erreur lors de l'import du fichier mensuel."]);
     showEmpty("Impossible d'analyser le fichier sélectionné.");
   }
 }
 
+// ── Upload history files ──────────────────────────────────────────────────────
+async function uploadHistoryFiles(files) {
+  if (!files || !files.length) return;
+  setLoading(true);
+  showWarning([]);
+  const fd = new FormData();
+  for (const f of files) fd.append('files', f);
+  fd.append('session_id', SESSION_ID);
+  try {
+    const res = await fetch('/api/upload/history', { method: 'POST', body: fd });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || "Erreur lors de l'import historique.");
+    if (data.session_id) {
+      SESSION_ID = data.session_id;
+      localStorage.setItem(LS_KEY, SESSION_ID);
+    }
+    await loadSessionStatus();
+    setLoading(false);
+    showWarning(data.warnings || []);
+    const count = (data.source_files || []).length;
+    document.getElementById('stats-row').style.display = 'none';
+    document.getElementById('results-section').style.display = 'none';
+    showEmpty(count + ' fichier(s) historique importé(s). Sélectionnez une période pour filtrer.');
+  } catch (e) {
+    setLoading(false);
+    showWarning(["Erreur lors de l'import des fichiers historiques."]);
+    showEmpty("Impossible d'analyser les fichiers sélectionnés.");
+  }
+}
+
+// ── Drag & drop ───────────────────────────────────────────────────────────────
+const dzCurrent = document.getElementById('dropzone-current');
+if (dzCurrent) {
+  dzCurrent.addEventListener('dragover', e => { e.preventDefault(); dzCurrent.classList.add('drag'); });
+  dzCurrent.addEventListener('dragleave', () => dzCurrent.classList.remove('drag'));
+  dzCurrent.addEventListener('drop', e => {
+    e.preventDefault();
+    dzCurrent.classList.remove('drag');
+    const f = e.dataTransfer.files[0];
+    if (f) uploadCurrentFile(f);
+  });
+}
+const dzHistory = document.getElementById('dropzone-history');
+if (dzHistory) {
+  dzHistory.addEventListener('dragover', e => { e.preventDefault(); dzHistory.classList.add('drag'); });
+  dzHistory.addEventListener('dragleave', () => dzHistory.classList.remove('drag'));
+  dzHistory.addEventListener('drop', e => {
+    e.preventDefault();
+    dzHistory.classList.remove('drag');
+    if (e.dataTransfer.files.length) uploadHistoryFiles(e.dataTransfer.files);
+  });
+}
+
+document.getElementById('fileInputCurrent').addEventListener('change', e => {
+  if (e.target.files[0]) uploadCurrentFile(e.target.files[0]);
+});
+document.getElementById('fileInputHistory').addEventListener('change', e => {
+  if (e.target.files.length) uploadHistoryFiles(e.target.files);
+});
+document.getElementById('apply-filter').addEventListener('click', applyDateFilter);
+document.getElementById('reset-filter').addEventListener('click', loadDefaultData);
+
+// ── Rendering ─────────────────────────────────────────────────────────────────
 function siteBadge(site) {
-  return `<span class="site-badge site-${site}">${site}</span>`;
+  return '<span class="site-badge site-' + site + '">' + site + '</span>';
 }
 
 function camCell(cam, site) {
-  return `<span class="cam-badge">${cam}</span>${siteBadge(site)}`;
+  return '<span class="cam-badge">' + cam + '</span>' + siteBadge(site);
 }
 
 function render(data) {
@@ -661,24 +817,24 @@ function render(data) {
   const modeLabel = data.mode === 'date_range'
     ? 'Période filtrée'
     : data.mode === 'upload'
-      ? 'Import manuel'
+      ? 'Import mensuel'
       : 'Mois en cours';
-  fileBadge.innerHTML = `<span class="file-badge">${modeLabel}</span>`;
+  fileBadge.innerHTML = '<span class="file-badge">' + modeLabel + '</span>';
 
   const fileCount = data.source_files && data.source_files.length
-    ? `${data.source_files.length} fichier(s)`
+    ? data.source_files.length + ' fichier(s)'
     : 'Aucun fichier chargé';
-  rangeBadge.textContent = [data.source_label || data.filename, fileCount].filter(Boolean).join(' • ');
+  rangeBadge.textContent = [data.source_label || data.filename, fileCount].filter(Boolean).join(' \u2022 ');
 
   document.getElementById('s-total').textContent = fmt(data.grand_total || 0);
   document.getElementById('s-count').textContent = fmtI(data.grand_count || 0);
-  document.getElementById('s-skip').textContent = `${data.lines_parsed || 0} lignes analysées`;
+  document.getElementById('s-skip').textContent = (data.lines_parsed || 0) + ' lignes analysées';
   document.getElementById('s-cams').textContent = data.active_cams || 0;
   if (hasCamRows) {
     document.getElementById('s-leader').innerHTML = camCell(data.rows[0].cam, data.rows[0].site);
     document.getElementById('s-leader-amt').textContent = fmt(data.rows[0].total) + ' DT';
   } else {
-    document.getElementById('s-leader').textContent = '—';
+    document.getElementById('s-leader').textContent = '\u2014';
     document.getElementById('s-leader-amt').textContent = '0.000 DT';
   }
   document.getElementById('stats-row').style.display = 'grid';
@@ -697,48 +853,45 @@ function render(data) {
   const rb = document.getElementById('ranking-body');
   rb.innerHTML = '';
   data.rows.forEach(r => {
-    const rankCls = r.rank <= 3 ? `rank-${r.rank}` : '';
+    const rankCls = r.rank <= 3 ? 'rank-' + r.rank : '';
     const espPct = maxTotal ? Math.round(r.esp / maxTotal * 100) : 0;
     const trtPct = maxTotal ? Math.round(r.trt / maxTotal * 100) : 0;
     const chqPct = maxTotal ? Math.round(r.chq / maxTotal * 100) : 0;
-
-    rb.innerHTML += `<tr>
-      <td><span class="rank ${rankCls}">${r.rank}</span></td>
-      <td>${camCell(r.cam, r.site)}</td>
-      <td>
-        <div class="bars">
-          ${espPct > 0 ? `<div class="bar-row"><span class="bar-label" style="color:var(--teal);font-weight:700">E</span><div class="bar-track"><div class="bar-fill" style="width:${espPct}%;background:var(--teal)"></div></div></div>` : ''}
-          ${trtPct > 0 ? `<div class="bar-row"><span class="bar-label" style="color:var(--blue);font-weight:700">T</span><div class="bar-track"><div class="bar-fill" style="width:${trtPct}%;background:var(--blue)"></div></div></div>` : ''}
-          ${chqPct > 0 ? `<div class="bar-row"><span class="bar-label" style="color:var(--pink);font-weight:700">C</span><div class="bar-track"><div class="bar-fill" style="width:${chqPct}%;background:var(--pink)"></div></div></div>` : ''}
-        </div>
-      </td>
-      <td class="num" style="font-weight:600">${fmt(r.total)}</td>
-      <td class="num" style="color:var(--text2)">${fmtI(r.total_count)}</td>
-    </tr>`;
+    let bars = '';
+    if (espPct > 0) bars += '<div class="bar-row"><span class="bar-label" style="color:var(--teal);font-weight:700">E</span><div class="bar-track"><div class="bar-fill" style="width:' + espPct + '%;background:var(--teal)"></div></div></div>';
+    if (trtPct > 0) bars += '<div class="bar-row"><span class="bar-label" style="color:var(--blue);font-weight:700">T</span><div class="bar-track"><div class="bar-fill" style="width:' + trtPct + '%;background:var(--blue)"></div></div></div>';
+    if (chqPct > 0) bars += '<div class="bar-row"><span class="bar-label" style="color:var(--pink);font-weight:700">C</span><div class="bar-track"><div class="bar-fill" style="width:' + chqPct + '%;background:var(--pink)"></div></div></div>';
+    rb.innerHTML += '<tr>'
+      + '<td><span class="rank ' + rankCls + '">' + r.rank + '</span></td>'
+      + '<td>' + camCell(r.cam, r.site) + '</td>'
+      + '<td><div class="bars">' + bars + '</div></td>'
+      + '<td class="num" style="font-weight:600">' + fmt(r.total) + '</td>'
+      + '<td class="num" style="color:var(--text2)">' + fmtI(r.total_count) + '</td>'
+      + '</tr>';
   });
 
   const db = document.getElementById('detail-body');
   db.innerHTML = '';
   data.rows.forEach(r => {
-    db.innerHTML += `<tr>
-      <td>${camCell(r.cam, r.site)}</td>
-      <td class="num">${r.esp > 0 ? `<span class="pill pill-esp">${fmt(r.esp)}</span>` : '<span style="color:var(--text3)">—</span>'}</td>
-      <td class="num">${r.trt > 0 ? `<span class="pill pill-trt">${fmt(r.trt)}</span>` : '<span style="color:var(--text3)">—</span>'}</td>
-      <td class="num">${r.chq > 0 ? `<span class="pill pill-chq">${fmt(r.chq)}</span>` : '<span style="color:var(--text3)">—</span>'}</td>
-      <td class="num" style="font-weight:600">${fmt(r.total)}</td>
-    </tr>`;
+    db.innerHTML += '<tr>'
+      + '<td>' + camCell(r.cam, r.site) + '</td>'
+      + '<td class="num">' + (r.esp > 0 ? '<span class="pill pill-esp">' + fmt(r.esp) + '</span>' : '<span style="color:var(--text3)">\u2014</span>') + '</td>'
+      + '<td class="num">' + (r.trt > 0 ? '<span class="pill pill-trt">' + fmt(r.trt) + '</span>' : '<span style="color:var(--text3)">\u2014</span>') + '</td>'
+      + '<td class="num">' + (r.chq > 0 ? '<span class="pill pill-chq">' + fmt(r.chq) + '</span>' : '<span style="color:var(--text3)">\u2014</span>') + '</td>'
+      + '<td class="num" style="font-weight:600">' + fmt(r.total) + '</td>'
+      + '</tr>';
   });
 
   const ob = document.getElementById('ops-body');
   ob.innerHTML = '';
   data.rows.forEach(r => {
-    ob.innerHTML += `<tr>
-      <td>${camCell(r.cam, r.site)}</td>
-      <td class="num">${r.esp_count > 0 ? `<span class="pill pill-esp">${r.esp_count}</span>` : '<span style="color:var(--text3)">—</span>'}</td>
-      <td class="num">${r.trt_count > 0 ? `<span class="pill pill-trt">${r.trt_count}</span>` : '<span style="color:var(--text3)">—</span>'}</td>
-      <td class="num">${r.chq_count > 0 ? `<span class="pill pill-chq">${r.chq_count}</span>` : '<span style="color:var(--text3)">—</span>'}</td>
-      <td class="num" style="font-weight:600">${r.total_count}</td>
-    </tr>`;
+    ob.innerHTML += '<tr>'
+      + '<td>' + camCell(r.cam, r.site) + '</td>'
+      + '<td class="num">' + (r.esp_count > 0 ? '<span class="pill pill-esp">' + r.esp_count + '</span>' : '<span style="color:var(--text3)">\u2014</span>') + '</td>'
+      + '<td class="num">' + (r.trt_count > 0 ? '<span class="pill pill-trt">' + r.trt_count + '</span>' : '<span style="color:var(--text3)">\u2014</span>') + '</td>'
+      + '<td class="num">' + (r.chq_count > 0 ? '<span class="pill pill-chq">' + r.chq_count + '</span>' : '<span style="color:var(--text3)">\u2014</span>') + '</td>'
+      + '<td class="num" style="font-weight:600">' + r.total_count + '</td>'
+      + '</tr>';
   });
 
   const sb = document.getElementById('sites-body');
@@ -746,18 +899,18 @@ function render(data) {
   if (data.sites_summary) {
     const sitesSorted = Object.entries(data.sites_summary).sort((a, b) => b[1].amount - a[1].amount);
     sitesSorted.forEach(([site, v]) => {
-      sb.innerHTML += `<tr>
-        <td>${siteBadge(site)}</td>
-        <td class="num" style="color:var(--text2)">${v.cam_count}</td>
-        <td class="num">${v.esp_count > 0 ? `<span class="pill pill-esp">${fmtI(v.esp_count)}</span>` : '<span style="color:var(--text3)">—</span>'}</td>
-        <td class="num">${v.trt_count > 0 ? `<span class="pill pill-trt">${fmtI(v.trt_count)}</span>` : '<span style="color:var(--text3)">—</span>'}</td>
-        <td class="num">${v.chq_count > 0 ? `<span class="pill pill-chq">${fmtI(v.chq_count)}</span>` : '<span style="color:var(--text3)">—</span>'}</td>
-        <td class="num" style="font-weight:600">${fmtI(v.count)}</td>
-        <td class="num">${v.esp_amount > 0 ? `<span class="pill pill-esp">${fmt(v.esp_amount)}</span>` : '<span style="color:var(--text3)">—</span>'}</td>
-        <td class="num">${v.trt_amount > 0 ? `<span class="pill pill-trt">${fmt(v.trt_amount)}</span>` : '<span style="color:var(--text3)">—</span>'}</td>
-        <td class="num">${v.chq_amount > 0 ? `<span class="pill pill-chq">${fmt(v.chq_amount)}</span>` : '<span style="color:var(--text3)">—</span>'}</td>
-        <td class="num" style="font-weight:600">${fmt(v.amount)}</td>
-      </tr>`;
+      sb.innerHTML += '<tr>'
+        + '<td>' + siteBadge(site) + '</td>'
+        + '<td class="num" style="color:var(--text2)">' + v.cam_count + '</td>'
+        + '<td class="num">' + (v.esp_count > 0 ? '<span class="pill pill-esp">' + fmtI(v.esp_count) + '</span>' : '<span style="color:var(--text3)">\u2014</span>') + '</td>'
+        + '<td class="num">' + (v.trt_count > 0 ? '<span class="pill pill-trt">' + fmtI(v.trt_count) + '</span>' : '<span style="color:var(--text3)">\u2014</span>') + '</td>'
+        + '<td class="num">' + (v.chq_count > 0 ? '<span class="pill pill-chq">' + fmtI(v.chq_count) + '</span>' : '<span style="color:var(--text3)">\u2014</span>') + '</td>'
+        + '<td class="num" style="font-weight:600">' + fmtI(v.count) + '</td>'
+        + '<td class="num">' + (v.esp_amount > 0 ? '<span class="pill pill-esp">' + fmt(v.esp_amount) + '</span>' : '<span style="color:var(--text3)">\u2014</span>') + '</td>'
+        + '<td class="num">' + (v.trt_amount > 0 ? '<span class="pill pill-trt">' + fmt(v.trt_amount) + '</span>' : '<span style="color:var(--text3)">\u2014</span>') + '</td>'
+        + '<td class="num">' + (v.chq_amount > 0 ? '<span class="pill pill-chq">' + fmt(v.chq_amount) + '</span>' : '<span style="color:var(--text3)">\u2014</span>') + '</td>'
+        + '<td class="num" style="font-weight:600">' + fmt(v.amount) + '</td>'
+        + '</tr>';
     });
   }
 
@@ -774,6 +927,8 @@ function switchTab(name) {
   });
 }
 
+// ── Page load ─────────────────────────────────────────────────────────────────
+loadSessionStatus();
 loadDefaultData();
 </script>
 </body>
