@@ -2,8 +2,10 @@ from collections import defaultdict
 from datetime import date, datetime
 import os
 import re
+import time
+import uuid
 
-from fastapi import FastAPI, File, Query, UploadFile
+from fastapi import FastAPI, File, Form, Query, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -19,6 +21,10 @@ TYPE_MAP = {
 VALID_SITES = {"SFX", "MAH", "NAB", "SSE", "TUN"}
 DEFAULT_CURRENT_REGLEMENT_FILE = r"D:\TDB SINDBAD\Fichiers Sources\REGLEMENT.txt"
 DEFAULT_HISTORY_REGLEMENTS_DIR = r"D:\TDB SINDBAD\Fichiers Sources\Réglements"
+
+# ── In-memory session store (TTL ~15 min) ────────────────────────────────────
+SESSION_TTL = 15 * 60  # seconds
+session_store: dict[str, dict] = {}
 
 CAM_SITE_MAP: dict[str, str] = {
     # SFX
@@ -216,6 +222,28 @@ async def index():
         return f.read()
 
 
+# ── Session helpers ───────────────────────────────────────────────────────────
+
+def cleanup_sessions() -> None:
+    now = time.time()
+    expired = [sid for sid, v in list(session_store.items()) if now - v["uploaded_at"] > SESSION_TTL]
+    for sid in expired:
+        del session_store[sid]
+
+
+def get_session(session_id: str | None) -> dict | None:
+    if not session_id or not isinstance(session_id, str):
+        return None
+    cleanup_sessions()
+    sess = session_store.get(session_id)
+    if sess is None:
+        return None
+    if time.time() - sess["uploaded_at"] > SESSION_TTL:
+        del session_store[session_id]
+        return None
+    return sess
+
+
 
 def build_upload_payload(
     rows: list[dict],
@@ -350,7 +378,16 @@ def build_upload_payload(
 
 
 @app.get("/api/default")
-async def get_default_dashboard():
+async def get_default_dashboard(session_id: str = None):
+    sess = get_session(session_id)
+    if sess and sess.get("current_rows"):
+        rows = sess["current_rows"]
+        filename = sess["current_filename"] or "REGLEMENT.txt"
+        return JSONResponse(
+            build_upload_payload(rows, filename, mode="default", source_files=[filename])
+        )
+
+    # Fallback: read from default file path (works locally, returns warning on Render)
     current_file = DEFAULT_CURRENT_REGLEMENT_FILE
     rows, source_files, warnings = load_rows_from_paths([current_file])
     label = f"Mois en cours · {os.path.basename(current_file)}"
@@ -369,6 +406,7 @@ async def get_default_dashboard():
 async def get_dashboard_for_range(
     start_date: str = Query(..., description="Date de début au format AAAA-MM-JJ"),
     end_date: str = Query(..., description="Date de fin au format AAAA-MM-JJ"),
+    session_id: str = None,
 ):
     try:
         start = parse_iso_date(start_date)
@@ -379,12 +417,27 @@ async def get_dashboard_for_range(
     if start > end:
         return JSONResponse({"detail": "La date de début doit être antérieure ou égale à la date de fin."}, status_code=400)
 
-    current_file = DEFAULT_CURRENT_REGLEMENT_FILE
-    history_dir = DEFAULT_HISTORY_REGLEMENTS_DIR
-    history_files, warnings = list_reglement_files(history_dir)
-    rows, source_files, load_warnings = load_rows_from_paths(history_files + [current_file])
-    filtered_rows = filter_rows_by_date(rows, start, end)
     label = f"Période du {start.strftime('%d/%m/%Y')} au {end.strftime('%d/%m/%Y')}"
+
+    sess = get_session(session_id)
+    if sess is not None:
+        # Use session-based uploaded data
+        current_rows: list[dict] = sess.get("current_rows", [])
+        history_rows: list[dict] = sess.get("history_rows", [])
+        all_rows = history_rows + current_rows
+        warnings: list[str] = []
+        if not current_rows and not history_rows:
+            warnings.append("Aucun fichier chargé. Veuillez importer les fichiers pour filtrer par date.")
+        elif not history_rows:
+            warnings.append("Aucun fichier historique chargé. Le filtre date n'utilise que le fichier mensuel.")
+        source_files = [f for f in ([sess.get("current_filename")] + sess.get("history_filenames", [])) if f]
+    else:
+        # Fallback: read from filesystem (for local use / backward-compat)
+        history_files, warnings = list_reglement_files(DEFAULT_HISTORY_REGLEMENTS_DIR)
+        all_rows, source_files, load_warnings = load_rows_from_paths(history_files + [DEFAULT_CURRENT_REGLEMENT_FILE])
+        warnings = list(warnings) + load_warnings
+
+    filtered_rows = filter_rows_by_date(all_rows, start, end)
 
     return JSONResponse(
         build_upload_payload(
@@ -393,7 +446,7 @@ async def get_dashboard_for_range(
             mode="date_range",
             source_files=source_files,
             date_range={"start": start.isoformat(), "end": end.isoformat()},
-            warnings=warnings + load_warnings,
+            warnings=warnings,
         )
     )
 
@@ -402,8 +455,9 @@ async def get_dashboard_for_range(
 async def get_dashboard_for_filter(
     start_date: str = Query(..., alias="start", description="Date de début au format AAAA-MM-JJ"),
     end_date: str = Query(..., alias="end", description="Date de fin au format AAAA-MM-JJ"),
+    session_id: str = None,
 ):
-    return await get_dashboard_for_range(start_date=start_date, end_date=end_date)
+    return await get_dashboard_for_range(start_date=start_date, end_date=end_date, session_id=session_id)
 
 
 @app.post("/upload")
@@ -418,3 +472,89 @@ async def upload(file: UploadFile = File(...)):
     return JSONResponse(
         build_upload_payload(rows, file.filename, mode="upload", source_files=[file.filename])
     )
+
+
+@app.post("/api/upload/current")
+async def upload_current(file: UploadFile = File(...), session_id: str = Form(default=None)):
+    content = await file.read()
+    try:
+        text = content.decode("utf-8")
+    except UnicodeDecodeError:
+        text = content.decode("latin-1")
+
+    rows = parse_lines(text)
+    fname = file.filename or "REGLEMENT.txt"
+    sid = session_id if session_id and isinstance(session_id, str) and session_id.strip() else str(uuid.uuid4())
+
+    cleanup_sessions()
+    if sid in session_store:
+        session_store[sid]["current_rows"] = rows
+        session_store[sid]["current_filename"] = fname
+        session_store[sid]["uploaded_at"] = time.time()
+    else:
+        session_store[sid] = {
+            "current_rows": rows,
+            "current_filename": fname,
+            "history_rows": [],
+            "history_filenames": [],
+            "uploaded_at": time.time(),
+        }
+
+    payload = build_upload_payload(rows, fname, mode="upload", source_files=[fname])
+    payload["session_id"] = sid
+    payload["ttl_minutes"] = 15
+    return JSONResponse(payload)
+
+
+@app.post("/api/upload/history")
+async def upload_history(files: list[UploadFile] = File(...), session_id: str = Form(default=None)):
+    all_rows: list[dict] = []
+    filenames: list[str] = []
+
+    for file in files:
+        content = await file.read()
+        try:
+            text = content.decode("utf-8")
+        except UnicodeDecodeError:
+            text = content.decode("latin-1")
+        fname = file.filename or "history.txt"
+        all_rows.extend(parse_lines(text))
+        filenames.append(fname)
+
+    sid = session_id if session_id and isinstance(session_id, str) and session_id.strip() else str(uuid.uuid4())
+
+    cleanup_sessions()
+    if sid in session_store:
+        session_store[sid]["history_rows"] = all_rows
+        session_store[sid]["history_filenames"] = filenames
+        session_store[sid]["uploaded_at"] = time.time()
+    else:
+        session_store[sid] = {
+            "current_rows": [],
+            "current_filename": None,
+            "history_rows": all_rows,
+            "history_filenames": filenames,
+            "uploaded_at": time.time(),
+        }
+
+    label = f"{len(filenames)} fichier(s) historique"
+    payload = build_upload_payload(all_rows, label, mode="upload", source_files=filenames)
+    payload["session_id"] = sid
+    payload["ttl_minutes"] = 15
+    return JSONResponse(payload)
+
+
+@app.get("/api/session/status")
+async def session_status(session_id: str = None):
+    sess = get_session(session_id)
+    if not sess:
+        return JSONResponse({"valid": False, "has_current": False, "has_history": False})
+    remaining = max(0.0, SESSION_TTL - (time.time() - sess["uploaded_at"]))
+    return JSONResponse({
+        "valid": True,
+        "has_current": bool(sess.get("current_rows")),
+        "has_history": bool(sess.get("history_rows")),
+        "current_filename": sess.get("current_filename"),
+        "history_filenames": sess.get("history_filenames", []),
+        "ttl_remaining_minutes": round(remaining / 60, 1),
+    })
