@@ -12,17 +12,19 @@ Puis ouvrir **http://localhost:8000**
 
 ## 📋 Utilisation
 
-1. Au chargement, le dashboard lit automatiquement le fichier courant :
-   - `D:\TDB SINDBAD\Fichiers Sources\REGLEMENT.txt`
-2. Vous pouvez filtrer une période avec les champs **Du / Au** :
-   - le backend charge alors tous les fichiers `.txt` de `D:\TDB SINDBAD\Fichiers Sources\Réglements`
-   - et ajoute aussi `REGLEMENT.txt` pour couvrir le mois en cours
-3. Le dashboard affiche automatiquement :
+1. Importez votre **fichier du mois courant** (`REGLEMENT.txt`) puis vos **fichiers historiques** (`.txt`) depuis l'interface.
+2. Les données importées sont conservées côté application pendant **7 jours** (et restent disponibles après refresh pendant cette période).
+3. Un bandeau en haut affiche la **période couverte** par les fichiers chargés (mois/année + dates exactes).
+4. Si vous réimportez des historiques qui couvrent une période déjà stockée, les données existantes qui se chevauchent sont remplacées par le nouvel import.
+5. Vous pouvez filtrer une période avec les champs **Du / Au** :
+   - le filtre s'applique sur l'ensemble des données stockées (mensuel + historiques)
+   - la vue par défaut reste basée sur le fichier mensuel chargé
+6. Le dashboard affiche automatiquement :
    - **Résumé global** : total réglé, nb transactions, CAMs actives
    - **Par type** : Espèces (CESP), Traite (CTRT), Chèque (CCHQR)
    - **Classement des CAMs** : rang, montant, site d'appartenance, répartition par type
    - **Par site** : totaux regroupés par site (SFX, MAH, NAB, SSE, TUN), y compris les lignes sans CAM explicite si le site est présent
-4. L'import manuel d'un fichier `.txt` reste disponible si besoin.
+7. L'import manuel d'un fichier `.txt` (endpoint `/upload`) reste disponible si besoin.
 
 ### Variables d'environnement optionnelles
 
