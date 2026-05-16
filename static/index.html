@@ -393,6 +393,31 @@
     background: var(--teal);
     flex-shrink: 0;
   }
+  .coverage-banner {
+    display: none;
+    background: linear-gradient(135deg, var(--blue-light), var(--surface));
+    border: 0.5px solid var(--border);
+    border-radius: var(--radius);
+    padding: 14px 16px;
+    margin-bottom: 1rem;
+  }
+  .coverage-label {
+    font-size: 11px;
+    letter-spacing: .06em;
+    text-transform: uppercase;
+    color: var(--text3);
+    margin-bottom: 6px;
+  }
+  .coverage-range {
+    font-size: 20px;
+    font-weight: 650;
+    color: var(--text);
+    margin-bottom: 4px;
+  }
+  .coverage-sub {
+    font-size: 12px;
+    color: var(--text2);
+  }
 
   /* ── Responsive ── */
   @media (max-width: 700px) {
@@ -420,6 +445,8 @@
 </header>
 
 <main>
+
+  <div id="coverage-banner" class="coverage-banner"></div>
 
   <!-- Session status bar -->
   <div id="session-status-bar" class="session-status-bar" style="display:none"></div>
@@ -613,6 +640,7 @@ const fileBadge = document.getElementById('file-badge');
 const startDateInput = document.getElementById('start-date');
 const endDateInput = document.getElementById('end-date');
 const sessionStatusBar = document.getElementById('session-status-bar');
+const coverageBanner = document.getElementById('coverage-banner');
 
 // ── UI helpers ────────────────────────────────────────────────────────────────
 function setLoading(isLoading) {
@@ -639,11 +667,53 @@ function showEmpty(message) {
   emptyMsg.style.display = 'block';
 }
 
+function formatMonthYear(value) {
+  if (!value) return '—';
+  const dt = new Date(value + 'T00:00:00');
+  return dt.toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' });
+}
+
+function formatExactDate(value) {
+  if (!value) return '—';
+  const dt = new Date(value + 'T00:00:00');
+  return dt.toLocaleDateString('fr-FR');
+}
+
+function formatDateTime(ts) {
+  if (!ts) return null;
+  const dt = new Date(ts * 1000);
+  return dt.toLocaleString('fr-FR', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
+function updateCoverageBanner(storage) {
+  if (!storage || !storage.valid || !storage.coverage_start || !storage.coverage_end) {
+    coverageBanner.style.display = 'none';
+    coverageBanner.innerHTML = '';
+    return;
+  }
+  const title = formatMonthYear(storage.coverage_start) + ' → ' + formatMonthYear(storage.coverage_end);
+  const subtitle = 'Du ' + formatExactDate(storage.coverage_start) + ' au ' + formatExactDate(storage.coverage_end)
+    + ' • ' + (storage.stored_file_count || 0) + ' fichier(s) stocké(s)';
+  coverageBanner.innerHTML = ''
+    + '<div class="coverage-label">Période de recherche disponible</div>'
+    + '<div class="coverage-range">' + title + '</div>'
+    + '<div class="coverage-sub">' + subtitle + '</div>';
+  coverageBanner.style.display = 'block';
+}
+
 function updateSessionStatusBar(status) {
   if (!status || !status.valid) {
     sessionStatusBar.style.display = 'none';
+    updateCoverageBanner(null);
     return;
   }
+  updateCoverageBanner(status);
   const parts = [];
   if (status.has_current) {
     const fname = status.current_filename || 'REGLEMENT.txt';
@@ -653,8 +723,10 @@ function updateSessionStatusBar(status) {
     const count = (status.history_filenames || []).length;
     parts.push('<span class="session-status-item"><span class="status-dot"></span>Historique\u00a0: ' + count + ' fichier(s)</span>');
   }
-  if (status.ttl_remaining_minutes !== undefined) {
-    parts.push('<span style="color:var(--text3);margin-left:auto">Expire dans ' + status.ttl_remaining_minutes + ' min</span>');
+  if (status.expires_at) {
+    const expiresAt = formatDateTime(status.expires_at);
+    const ttlDays = status.ttl_remaining_days !== undefined ? status.ttl_remaining_days : '';
+    parts.push('<span style="color:var(--text3);margin-left:auto">Conservé 7 jours • expire le ' + expiresAt + ' (' + ttlDays + ' j restants)</span>');
   }
   sessionStatusBar.innerHTML = parts.join('');
   sessionStatusBar.style.display = 'flex';
@@ -755,9 +827,12 @@ async function uploadHistoryFiles(files) {
     setLoading(false);
     showWarning(data.warnings || []);
     const count = (data.source_files || []).length;
+    const coverage = data.uploaded_coverage && data.uploaded_coverage.start && data.uploaded_coverage.end
+      ? ' Période importée : ' + formatMonthYear(data.uploaded_coverage.start) + ' → ' + formatMonthYear(data.uploaded_coverage.end) + '.'
+      : '';
     document.getElementById('stats-row').style.display = 'none';
     document.getElementById('results-section').style.display = 'none';
-    showEmpty(count + ' fichier(s) historique importé(s). Sélectionnez une période pour filtrer.');
+    showEmpty(count + ' fichier(s) historique importé(s). Les périodes existantes qui se chevauchent sont remplacées.' + coverage + ' Sélectionnez une période pour filtrer.');
   } catch (e) {
     setLoading(false);
     showWarning(["Erreur lors de l'import des fichiers historiques."]);
@@ -809,6 +884,10 @@ function camCell(cam, site) {
 function render(data) {
   setLoading(false);
   showWarning(data.warnings || []);
+  updateCoverageBanner(data.storage_status || null);
+  if (data.storage_status) {
+    updateSessionStatusBar(data.storage_status);
+  }
 
   const hasCamRows = !!(data.rows && data.rows.length);
   const hasSiteRows = !!(data.sites_summary && Object.keys(data.sites_summary).length);

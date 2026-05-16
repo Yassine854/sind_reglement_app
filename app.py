@@ -1,5 +1,6 @@
 from collections import defaultdict
 from datetime import date, datetime
+import json
 import os
 import re
 import time
@@ -22,8 +23,9 @@ VALID_SITES = {"SFX", "MAH", "NAB", "SSE", "TUN"}
 DEFAULT_CURRENT_REGLEMENT_FILE = r"D:\TDB SINDBAD\Fichiers Sources\REGLEMENT.txt"
 DEFAULT_HISTORY_REGLEMENTS_DIR = r"D:\TDB SINDBAD\Fichiers Sources\Réglements"
 
-# ── In-memory session store (TTL ~15 min) ────────────────────────────────────
-SESSION_TTL = 15 * 60  # seconds
+# ── Session storage (7 days) ──────────────────────────────────────────────────
+SESSION_TTL = 7 * 24 * 60 * 60  # seconds
+SESSION_STORAGE_FILE = os.path.join("data", "uploaded_sessions.json")
 session_store: dict[str, dict] = {}
 
 CAM_SITE_MAP: dict[str, str] = {
@@ -224,24 +226,196 @@ async def index():
 
 # ── Session helpers ───────────────────────────────────────────────────────────
 
+def date_to_iso(value: date | None) -> str | None:
+    return value.isoformat() if isinstance(value, date) else None
+
+
+def parse_iso_date_optional(value: str | None) -> date | None:
+    if not value or not isinstance(value, str):
+        return None
+    try:
+        return parse_iso_date(value)
+    except ValueError:
+        return None
+
+
+def serialize_row(row: dict) -> dict:
+    return {
+        **row,
+        "reglement_date": date_to_iso(row.get("reglement_date")),
+    }
+
+
+def deserialize_row(row: dict) -> dict:
+    reglement_date = parse_iso_date_optional(row.get("reglement_date"))
+    return {
+        **row,
+        "reglement_date": reglement_date,
+        "reglement_date_iso": reglement_date.isoformat() if reglement_date else None,
+    }
+
+
+def get_rows_bounds(rows: list[dict]) -> tuple[date | None, date | None]:
+    dates = [r.get("reglement_date") for r in rows if isinstance(r.get("reglement_date"), date)]
+    if not dates:
+        return None, None
+    return min(dates), max(dates)
+
+
+def get_or_create_session(session_id: str | None) -> tuple[str, dict]:
+    sid = session_id if session_id and isinstance(session_id, str) and session_id.strip() else str(uuid.uuid4())
+    sess = session_store.get(sid)
+    if sess is None:
+        sess = {
+            "current_rows": [],
+            "current_filename": None,
+            "current_uploaded_at": None,
+            "current_expires_at": None,
+            "history_batches": [],
+            "last_updated_at": None,
+        }
+        session_store[sid] = sess
+    return sid, sess
+
+
+def get_session_rows(sess: dict) -> tuple[list[dict], list[str]]:
+    history_rows: list[dict] = []
+    history_filenames: list[str] = []
+    for batch in sess.get("history_batches", []):
+        history_rows.extend(batch.get("rows", []))
+        history_filenames.extend(batch.get("filenames", []))
+    return history_rows, history_filenames
+
+
+def get_session_coverage(sess: dict) -> tuple[date | None, date | None]:
+    rows: list[dict] = []
+    rows.extend(sess.get("current_rows", []))
+    history_rows, _ = get_session_rows(sess)
+    rows.extend(history_rows)
+    return get_rows_bounds(rows)
+
+
+def save_sessions() -> None:
+    os.makedirs(os.path.dirname(SESSION_STORAGE_FILE), exist_ok=True)
+    serializable: dict[str, dict] = {}
+    for sid, sess in session_store.items():
+        history_batches: list[dict] = []
+        for batch in sess.get("history_batches", []):
+            history_batches.append(
+                {
+                    "rows": [serialize_row(r) for r in batch.get("rows", [])],
+                    "filenames": batch.get("filenames", []),
+                    "uploaded_at": batch.get("uploaded_at"),
+                    "expires_at": batch.get("expires_at"),
+                    "min_date": batch.get("min_date"),
+                    "max_date": batch.get("max_date"),
+                }
+            )
+        serializable[sid] = {
+            "current_rows": [serialize_row(r) for r in sess.get("current_rows", [])],
+            "current_filename": sess.get("current_filename"),
+            "current_uploaded_at": sess.get("current_uploaded_at"),
+            "current_expires_at": sess.get("current_expires_at"),
+            "history_batches": history_batches,
+            "last_updated_at": sess.get("last_updated_at"),
+        }
+    with open(SESSION_STORAGE_FILE, "w", encoding="utf-8") as f:
+        json.dump(serializable, f)
+
+
+def load_sessions() -> None:
+    if not os.path.exists(SESSION_STORAGE_FILE):
+        return
+    try:
+        with open(SESSION_STORAGE_FILE, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return
+    for sid, sess in raw.items():
+        history_batches: list[dict] = []
+        for batch in sess.get("history_batches", []):
+            history_batches.append(
+                {
+                    "rows": [deserialize_row(r) for r in batch.get("rows", []) if isinstance(r, dict)],
+                    "filenames": batch.get("filenames", []),
+                    "uploaded_at": batch.get("uploaded_at"),
+                    "expires_at": batch.get("expires_at"),
+                    "min_date": batch.get("min_date"),
+                    "max_date": batch.get("max_date"),
+                }
+            )
+        session_store[sid] = {
+            "current_rows": [deserialize_row(r) for r in sess.get("current_rows", []) if isinstance(r, dict)],
+            "current_filename": sess.get("current_filename"),
+            "current_uploaded_at": sess.get("current_uploaded_at"),
+            "current_expires_at": sess.get("current_expires_at"),
+            "history_batches": history_batches,
+            "last_updated_at": sess.get("last_updated_at"),
+        }
+
+
+def summarize_session(sess: dict) -> dict:
+    now = time.time()
+    history_rows, history_filenames = get_session_rows(sess)
+    coverage_start, coverage_end = get_session_coverage(sess)
+    current_exp = sess.get("current_expires_at")
+    expiries = [
+        exp
+        for exp in [current_exp] + [batch.get("expires_at") for batch in sess.get("history_batches", [])]
+        if isinstance(exp, (int, float))
+    ]
+    expires_at = max(expiries) if expiries else None
+    remaining_seconds = max(0.0, expires_at - now) if expires_at is not None else 0.0
+    return {
+        "valid": True,
+        "has_current": bool(sess.get("current_rows")),
+        "has_history": bool(history_rows),
+        "current_filename": sess.get("current_filename"),
+        "history_filenames": history_filenames,
+        "coverage_start": date_to_iso(coverage_start),
+        "coverage_end": date_to_iso(coverage_end),
+        "stored_file_count": (1 if sess.get("current_filename") else 0) + len(history_filenames),
+        "stored_batch_count": (1 if sess.get("current_rows") else 0) + len(sess.get("history_batches", [])),
+        "last_updated_at": sess.get("last_updated_at"),
+        "expires_at": expires_at,
+        "ttl_remaining_minutes": round(remaining_seconds / 60, 1),
+        "ttl_remaining_days": round(remaining_seconds / 86400, 2),
+        "retention_days": 7,
+    }
+
+
 def cleanup_sessions() -> None:
     now = time.time()
-    expired = [sid for sid, v in list(session_store.items()) if now - v["uploaded_at"] > SESSION_TTL]
-    for sid in expired:
-        del session_store[sid]
+    changed = False
+    for sid, sess in list(session_store.items()):
+        current_expires = sess.get("current_expires_at")
+        if current_expires and now > current_expires:
+            sess["current_rows"] = []
+            sess["current_filename"] = None
+            sess["current_uploaded_at"] = None
+            sess["current_expires_at"] = None
+            changed = True
+        batches = sess.get("history_batches", [])
+        filtered_batches = [
+            batch for batch in batches
+            if not batch.get("expires_at") or now <= batch.get("expires_at")
+        ]
+        if len(filtered_batches) != len(batches):
+            sess["history_batches"] = filtered_batches
+            changed = True
+        if not sess.get("current_rows") and not sess.get("history_batches"):
+            del session_store[sid]
+            changed = True
+            continue
+    if changed:
+        save_sessions()
 
 
 def get_session(session_id: str | None) -> dict | None:
     if not session_id or not isinstance(session_id, str):
         return None
     cleanup_sessions()
-    sess = session_store.get(session_id)
-    if sess is None:
-        return None
-    if time.time() - sess["uploaded_at"] > SESSION_TTL:
-        del session_store[session_id]
-        return None
-    return sess
+    return session_store.get(session_id)
 
 
 
@@ -253,6 +427,7 @@ def build_upload_payload(
     source_files: list[str] | None = None,
     date_range: dict[str, str] | None = None,
     warnings: list[str] | None = None,
+    storage_status: dict | None = None,
 ) -> dict:
     cam_data: dict[str, dict] = defaultdict(
         lambda: {
@@ -374,7 +549,11 @@ def build_upload_payload(
         "source_files": source_files or [],
         "date_range": date_range,
         "warnings": warnings or [],
+        "storage_status": storage_status,
     }
+
+
+load_sessions()
 
 
 @app.get("/api/default")
@@ -383,8 +562,15 @@ async def get_default_dashboard(session_id: str = None):
     if sess and sess.get("current_rows"):
         rows = sess["current_rows"]
         filename = sess["current_filename"] or "REGLEMENT.txt"
+        storage_status = summarize_session(sess)
         return JSONResponse(
-            build_upload_payload(rows, filename, mode="default", source_files=[filename])
+            build_upload_payload(
+                rows,
+                filename,
+                mode="default",
+                source_files=[filename],
+                storage_status=storage_status,
+            )
         )
 
     # Fallback: read from default file path (works locally, returns warning on Render)
@@ -398,6 +584,7 @@ async def get_default_dashboard(session_id: str = None):
             mode="default",
             source_files=source_files,
             warnings=warnings,
+            storage_status=None,
         )
     )
 
@@ -423,19 +610,21 @@ async def get_dashboard_for_range(
     if sess is not None:
         # Use session-based uploaded data
         current_rows: list[dict] = sess.get("current_rows", [])
-        history_rows: list[dict] = sess.get("history_rows", [])
+        history_rows, history_filenames = get_session_rows(sess)
         all_rows = history_rows + current_rows
         warnings: list[str] = []
         if not current_rows and not history_rows:
             warnings.append("Aucun fichier chargé. Veuillez importer les fichiers pour filtrer par date.")
         elif not history_rows:
             warnings.append("Aucun fichier historique chargé. Le filtre date n'utilise que le fichier mensuel.")
-        source_files = [f for f in ([sess.get("current_filename")] + sess.get("history_filenames", [])) if f]
+        source_files = [f for f in ([sess.get("current_filename")] + history_filenames) if f]
+        storage_status = summarize_session(sess)
     else:
         # Fallback: read from filesystem (for local use / backward-compat)
         history_files, warnings = list_reglement_files(DEFAULT_HISTORY_REGLEMENTS_DIR)
         all_rows, source_files, load_warnings = load_rows_from_paths(history_files + [DEFAULT_CURRENT_REGLEMENT_FILE])
         warnings = list(warnings) + load_warnings
+        storage_status = None
 
     filtered_rows = filter_rows_by_date(all_rows, start, end)
 
@@ -447,6 +636,7 @@ async def get_dashboard_for_range(
             source_files=source_files,
             date_range={"start": start.isoformat(), "end": end.isoformat()},
             warnings=warnings,
+            storage_status=storage_status,
         )
     )
 
@@ -484,25 +674,25 @@ async def upload_current(file: UploadFile = File(...), session_id: str = Form(de
 
     rows = parse_lines(text)
     fname = file.filename or "REGLEMENT.txt"
-    sid = session_id if session_id and isinstance(session_id, str) and session_id.strip() else str(uuid.uuid4())
-
     cleanup_sessions()
-    if sid in session_store:
-        session_store[sid]["current_rows"] = rows
-        session_store[sid]["current_filename"] = fname
-        session_store[sid]["uploaded_at"] = time.time()
-    else:
-        session_store[sid] = {
-            "current_rows": rows,
-            "current_filename": fname,
-            "history_rows": [],
-            "history_filenames": [],
-            "uploaded_at": time.time(),
-        }
+    sid, sess = get_or_create_session(session_id)
+    now = time.time()
+    sess["current_rows"] = rows
+    sess["current_filename"] = fname
+    sess["current_uploaded_at"] = now
+    sess["current_expires_at"] = now + SESSION_TTL
+    sess["last_updated_at"] = now
+    save_sessions()
 
-    payload = build_upload_payload(rows, fname, mode="upload", source_files=[fname])
+    payload = build_upload_payload(
+        rows,
+        fname,
+        mode="upload",
+        source_files=[fname],
+        storage_status=summarize_session(sess),
+    )
     payload["session_id"] = sid
-    payload["ttl_minutes"] = 15
+    payload["retention_days"] = 7
     return JSONResponse(payload)
 
 
@@ -521,26 +711,51 @@ async def upload_history(files: list[UploadFile] = File(...), session_id: str = 
         all_rows.extend(parse_lines(text))
         filenames.append(fname)
 
-    sid = session_id if session_id and isinstance(session_id, str) and session_id.strip() else str(uuid.uuid4())
-
     cleanup_sessions()
-    if sid in session_store:
-        session_store[sid]["history_rows"] = all_rows
-        session_store[sid]["history_filenames"] = filenames
-        session_store[sid]["uploaded_at"] = time.time()
+    sid, sess = get_or_create_session(session_id)
+    now = time.time()
+    upload_min_date, upload_max_date = get_rows_bounds(all_rows)
+    upload_min_iso = date_to_iso(upload_min_date)
+    upload_max_iso = date_to_iso(upload_max_date)
+
+    history_batches = sess.get("history_batches", [])
+    if upload_min_date and upload_max_date:
+        remaining_batches: list[dict] = []
+        for batch in history_batches:
+            batch_min = parse_iso_date_optional(batch.get("min_date"))
+            batch_max = parse_iso_date_optional(batch.get("max_date"))
+            if batch_min and batch_max and not (upload_max_date < batch_min or upload_min_date > batch_max):
+                continue
+            remaining_batches.append(batch)
+        history_batches = remaining_batches
     else:
-        session_store[sid] = {
-            "current_rows": [],
-            "current_filename": None,
-            "history_rows": all_rows,
-            "history_filenames": filenames,
-            "uploaded_at": time.time(),
+        history_batches = []
+
+    history_batches.append(
+        {
+            "rows": all_rows,
+            "filenames": filenames,
+            "uploaded_at": now,
+            "expires_at": now + SESSION_TTL,
+            "min_date": upload_min_iso,
+            "max_date": upload_max_iso,
         }
+    )
+    sess["history_batches"] = history_batches
+    sess["last_updated_at"] = now
+    save_sessions()
 
     label = f"{len(filenames)} fichier(s) historique"
-    payload = build_upload_payload(all_rows, label, mode="upload", source_files=filenames)
+    payload = build_upload_payload(
+        all_rows,
+        label,
+        mode="upload",
+        source_files=filenames,
+        storage_status=summarize_session(sess),
+    )
     payload["session_id"] = sid
-    payload["ttl_minutes"] = 15
+    payload["retention_days"] = 7
+    payload["uploaded_coverage"] = {"start": upload_min_iso, "end": upload_max_iso}
     return JSONResponse(payload)
 
 
@@ -549,12 +764,4 @@ async def session_status(session_id: str = None):
     sess = get_session(session_id)
     if not sess:
         return JSONResponse({"valid": False, "has_current": False, "has_history": False})
-    remaining = max(0.0, SESSION_TTL - (time.time() - sess["uploaded_at"]))
-    return JSONResponse({
-        "valid": True,
-        "has_current": bool(sess.get("current_rows")),
-        "has_history": bool(sess.get("history_rows")),
-        "current_filename": sess.get("current_filename"),
-        "history_filenames": sess.get("history_filenames", []),
-        "ttl_remaining_minutes": round(remaining / 60, 1),
-    })
+    return JSONResponse(summarize_session(sess))

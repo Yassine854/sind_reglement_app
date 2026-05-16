@@ -2,13 +2,31 @@ import asyncio
 import json
 import tempfile
 import unittest
+from io import BytesIO
 from pathlib import Path
 from unittest.mock import patch
 
-from app import get_dashboard_for_filter, get_dashboard_for_range, get_default_dashboard, parse_lines
+from starlette.datastructures import UploadFile
+
+from app import (
+    SESSION_TTL,
+    get_dashboard_for_filter,
+    get_dashboard_for_range,
+    get_default_dashboard,
+    parse_lines,
+    session_status,
+    session_store,
+    upload_history,
+)
 
 
 class ReglementDateLoadingTests(unittest.TestCase):
+    def setUp(self):
+        session_store.clear()
+
+    def _upload_file(self, filename: str, content: str) -> UploadFile:
+        return UploadFile(filename=filename, file=BytesIO(content.encode("utf-8")))
+
     def test_parse_lines_uses_reglement_date_column(self):
         text = "CTRT-26-03-0000002;26-99-CAM50-00159;20260304;20260525;SFX;TRT;CLS06386;;ATB;ACF-SFX-26-00003;188.249"
 
@@ -113,6 +131,46 @@ class ReglementDateLoadingTests(unittest.TestCase):
         payload = json.loads(response.body)
         self.assertEqual(payload["mode"], "date_range")
         self.assertEqual(payload["grand_count"], 1)
+
+    def test_history_upload_replaces_overlapping_batches(self):
+        sid = "session-overlap"
+        first = self._upload_file(
+            "reglement_avril.txt",
+            "CTRT-26-04-0000001;26-99-CAM50-00159;20260401;20260424;NAB;TRT;CLS06386;;ATB;ACF-NAB-26-00001;100.0\n",
+        )
+        second = self._upload_file(
+            "reglement_mai.txt",
+            "CESP-26-05-0000826;26-99-CAM39-00416;20260502;20260510;BJSSE;ESP;CLS05585;;;FAC-BJS-26-00415;120.1\n",
+        )
+        overlapping = self._upload_file(
+            "reglement_avril_maj.txt",
+            "CTRT-26-04-0000002;26-99-CAM50-00159;20260402;20260424;NAB;TRT;CLS06386;;ATB;ACF-NAB-26-00002;200.0\n",
+        )
+
+        asyncio.run(upload_history(files=[first], session_id=sid))
+        asyncio.run(upload_history(files=[second], session_id=sid))
+        asyncio.run(upload_history(files=[overlapping], session_id=sid))
+
+        status_payload = json.loads(asyncio.run(session_status(session_id=sid)).body)
+        self.assertTrue(status_payload["valid"])
+        self.assertEqual(status_payload["stored_batch_count"], 2)
+        self.assertEqual(status_payload["history_filenames"], ["reglement_mai.txt", "reglement_avril_maj.txt"])
+        self.assertEqual(status_payload["coverage_start"], "2026-04-24")
+        self.assertEqual(status_payload["coverage_end"], "2026-05-10")
+
+    def test_session_status_reports_seven_day_retention(self):
+        sid = "session-retention"
+        upload = self._upload_file(
+            "reglement_juin.txt",
+            "CTRT-26-06-0000001;26-99-CAM50-00159;20260601;20260605;NAB;TRT;CLS06386;;ATB;ACF-NAB-26-00001;100.0\n",
+        )
+        asyncio.run(upload_history(files=[upload], session_id=sid))
+
+        payload = json.loads(asyncio.run(session_status(session_id=sid)).body)
+        self.assertEqual(payload["retention_days"], 7)
+        self.assertGreater(payload["ttl_remaining_days"], 6.9)
+        self.assertLessEqual(payload["ttl_remaining_days"], 7.0)
+        self.assertEqual(SESSION_TTL, 7 * 24 * 60 * 60)
 
 
 if __name__ == "__main__":
