@@ -418,6 +418,33 @@
     font-size: 12px;
     color: var(--text2);
   }
+  .history-progress {
+    display: none;
+    background: var(--surface);
+    border: 0.5px solid var(--border);
+    border-radius: var(--radius);
+    padding: 12px 14px;
+    margin-bottom: 1rem;
+  }
+  .history-progress-title {
+    font-size: 13px;
+    font-weight: 600;
+    margin-bottom: 6px;
+  }
+  .history-progress-meta {
+    font-size: 12px;
+    color: var(--text2);
+    margin-bottom: 8px;
+  }
+  .history-progress-list {
+    margin: 0;
+    padding-left: 16px;
+    font-size: 12px;
+    color: var(--text2);
+    line-height: 1.5;
+  }
+  .history-success { color: var(--teal-dark); }
+  .history-failure { color: var(--amber); }
 
   /* ── Responsive ── */
   @media (max-width: 700px) {
@@ -471,6 +498,7 @@
   </div>
 
   <div id="warning-banner" class="warning-banner"></div>
+  <div id="history-progress" class="history-progress"></div>
 
   <!-- Upload zones -->
   <div class="upload-section">
@@ -641,6 +669,7 @@ const startDateInput = document.getElementById('start-date');
 const endDateInput = document.getElementById('end-date');
 const sessionStatusBar = document.getElementById('session-status-bar');
 const coverageBanner = document.getElementById('coverage-banner');
+const historyProgress = document.getElementById('history-progress');
 
 // ── UI helpers ────────────────────────────────────────────────────────────────
 function setLoading(isLoading) {
@@ -665,6 +694,28 @@ function showWarning(messages) {
 function showEmpty(message) {
   emptyMsg.textContent = message;
   emptyMsg.style.display = 'block';
+}
+
+function escapeHtml(value) {
+  return (value || '').replace(/[&<>"'`]/g, match => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;', '`': '&#96;' }[match]));
+}
+
+function renderHistoryProgress(state) {
+  if (!state || !state.total) {
+    historyProgress.style.display = 'none';
+    historyProgress.innerHTML = '';
+    return;
+  }
+  const status = state.done ? 'Terminé' : 'Import en cours';
+  const meta = state.processed + ' / ' + state.total + ' fichier(s) traités • '
+    + state.successes.length + ' succès • ' + state.failures.length + ' échec(s)';
+  const successItems = state.successes.map(filename => '<li class="history-success">✔ ' + escapeHtml(filename) + '</li>').join('');
+  const failureItems = state.failures.map(failure => '<li class="history-failure">✖ ' + escapeHtml(failure.filename) + ' — ' + escapeHtml(failure.error) + '</li>').join('');
+  historyProgress.innerHTML = ''
+    + '<div class="history-progress-title">' + status + ' · Import des historiques</div>'
+    + '<div class="history-progress-meta">' + meta + '</div>'
+    + '<ul class="history-progress-list">' + successItems + failureItems + '</ul>';
+  historyProgress.style.display = 'block';
 }
 
 function formatMonthYear(value) {
@@ -812,32 +863,57 @@ async function uploadHistoryFiles(files) {
   if (!files || !files.length) return;
   setLoading(true);
   showWarning([]);
-  const fd = new FormData();
-  for (const f of files) fd.append('files', f);
-  fd.append('session_id', SESSION_ID);
-  try {
-    const res = await fetch('/api/upload/history', { method: 'POST', body: fd });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.detail || "Erreur lors de l'import historique.");
-    if (data.session_id) {
-      SESSION_ID = data.session_id;
-      localStorage.setItem(LS_KEY, SESSION_ID);
+  const progress = { total: files.length, processed: 0, successes: [], failures: [], done: false };
+  renderHistoryProgress(progress);
+  let firstError = null;
+  for (const file of files) {
+    const fd = new FormData();
+    fd.append('file', file);
+    fd.append('session_id', SESSION_ID);
+    try {
+      const res = await fetch('/api/upload/history-file', { method: 'POST', body: fd });
+      const data = await res.json();
+      if (data.session_id) {
+        SESSION_ID = data.session_id;
+        localStorage.setItem(LS_KEY, SESSION_ID);
+      }
+      if (res.ok && data.success) {
+        progress.successes.push(file.name);
+      } else {
+        const msg = data.error || data.detail || "Erreur d'import.";
+        progress.failures.push({ filename: file.name, error: msg });
+        if (!firstError) firstError = msg;
+      }
+    } catch (e) {
+      const msg = "Échec réseau pendant l'import: " + (e?.message || "erreur inconnue");
+      progress.failures.push({ filename: file.name, error: msg });
+      if (!firstError) firstError = msg;
     }
-    await loadSessionStatus();
-    setLoading(false);
-    showWarning(data.warnings || []);
-    const count = (data.source_files || []).length;
-    const coverage = data.uploaded_coverage && data.uploaded_coverage.start && data.uploaded_coverage.end
-      ? ' Période importée : ' + formatMonthYear(data.uploaded_coverage.start) + ' → ' + formatMonthYear(data.uploaded_coverage.end) + '.'
-      : '';
-    document.getElementById('stats-row').style.display = 'none';
-    document.getElementById('results-section').style.display = 'none';
-    showEmpty(count + ' fichier(s) historique importé(s). Les périodes existantes qui se chevauchent sont remplacées.' + coverage + ' Sélectionnez une période pour filtrer.');
-  } catch (e) {
-    setLoading(false);
-    showWarning(["Erreur lors de l'import des fichiers historiques."]);
-    showEmpty("Impossible d'analyser les fichiers sélectionnés.");
+    progress.processed += 1;
+    renderHistoryProgress(progress);
   }
+  progress.done = true;
+  renderHistoryProgress(progress);
+  await loadSessionStatus();
+  setLoading(false);
+  document.getElementById('stats-row').style.display = 'none';
+  document.getElementById('results-section').style.display = 'none';
+  if (progress.failures.length) {
+    showWarning([
+      progress.failures.length + " fichier(s) n'ont pas pu être importés.",
+      firstError || "Une ou plusieurs erreurs sont survenues."
+    ]);
+  } else {
+    showWarning([]);
+  }
+  if (!progress.successes.length) {
+    showEmpty("Aucun fichier historique valide importé. Vérifiez le format puis réessayez.");
+    return;
+  }
+  showEmpty(
+    progress.successes.length + " fichier(s) historique importé(s) sur " + progress.total
+    + ". Les périodes qui se chevauchent ont été remplacées. Sélectionnez une période pour filtrer."
+  );
 }
 
 // ── Drag & drop ───────────────────────────────────────────────────────────────

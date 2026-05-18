@@ -17,6 +17,7 @@ from app import (
     session_status,
     session_store,
     upload_history,
+    upload_history_file,
 )
 
 
@@ -155,6 +156,32 @@ class ReglementDateLoadingTests(unittest.TestCase):
         self.assertTrue(status_payload["valid"])
         self.assertEqual(status_payload["stored_batch_count"], 2)
         self.assertEqual(status_payload["history_filenames"], ["reglement_mai.txt", "reglement_avril_maj.txt"])
+        self.assertEqual(status_payload["coverage_start"], "2026-04-24")
+        self.assertEqual(status_payload["coverage_end"], "2026-05-10")
+
+    def test_history_file_upload_isolated_failures_do_not_abort_sequence(self):
+        sid = "session-sequential"
+        april = self._upload_file(
+            "reglement_avril.txt",
+            "CTRT-26-04-0000001;26-99-CAM50-00159;20260401;20260424;NAB;TRT;CLS06386;;ATB;ACF-NAB-26-00001;100.0\n",
+        )
+        invalid = self._upload_file("reglement_invalid.txt", "ligne-invalide-sans-separateurs")
+        may = self._upload_file(
+            "reglement_mai.txt",
+            "CESP-26-05-0000826;26-99-CAM39-00416;20260502;20260510;BJSSE;ESP;CLS05585;;;FAC-BJS-26-00415;120.1\n",
+        )
+
+        first_payload = json.loads(asyncio.run(upload_history_file(file=april, session_id=sid)).body)
+        invalid_payload = json.loads(asyncio.run(upload_history_file(file=invalid, session_id=sid)).body)
+        second_payload = json.loads(asyncio.run(upload_history_file(file=may, session_id=sid)).body)
+
+        self.assertTrue(first_payload["success"])
+        self.assertFalse(invalid_payload["success"])
+        self.assertTrue(second_payload["success"])
+
+        status_payload = json.loads(asyncio.run(session_status(session_id=sid)).body)
+        self.assertTrue(status_payload["valid"])
+        self.assertEqual(status_payload["history_filenames"], ["reglement_avril.txt", "reglement_mai.txt"])
         self.assertEqual(status_payload["coverage_start"], "2026-04-24")
         self.assertEqual(status_payload["coverage_end"], "2026-05-10")
 

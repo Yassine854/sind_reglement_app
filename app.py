@@ -262,6 +262,56 @@ def get_rows_bounds(rows: list[dict]) -> tuple[date | None, date | None]:
     return min(dates), max(dates)
 
 
+def decode_uploaded_content(content: bytes) -> str:
+    """Decode uploaded text using UTF-8 first, then Latin-1 fallback."""
+    try:
+        return content.decode("utf-8")
+    except UnicodeDecodeError:
+        return content.decode("latin-1")
+
+
+def merge_history_batch(sess: dict, rows: list[dict], filenames: list[str], now: float) -> dict:
+    """Merge one uploaded history batch, replacing overlapping stored date ranges.
+
+    Args:
+        sess: Session dictionary containing current and historical uploaded data.
+        rows: Parsed rows extracted from the uploaded historical file(s).
+        filenames: Source filenames represented by this batch.
+        now: Current unix timestamp used for retention metadata.
+
+    Returns:
+        Dict with "start" and "end" ISO dates for the uploaded coverage range.
+    """
+    upload_min_date, upload_max_date = get_rows_bounds(rows)
+    upload_min_iso = date_to_iso(upload_min_date)
+    upload_max_iso = date_to_iso(upload_max_date)
+
+    history_batches = sess.get("history_batches", [])
+    if upload_min_date and upload_max_date:
+        remaining_batches: list[dict] = []
+        for batch in history_batches:
+            batch_min = parse_iso_date_optional(batch.get("min_date"))
+            batch_max = parse_iso_date_optional(batch.get("max_date"))
+            if batch_min and batch_max and (upload_max_date >= batch_min and upload_min_date <= batch_max):
+                continue
+            remaining_batches.append(batch)
+        history_batches = remaining_batches
+
+    history_batches.append(
+        {
+            "rows": rows,
+            "filenames": filenames,
+            "uploaded_at": now,
+            "expires_at": now + SESSION_TTL,
+            "min_date": upload_min_iso,
+            "max_date": upload_max_iso,
+        }
+    )
+    sess["history_batches"] = history_batches
+    sess["last_updated_at"] = now
+    return {"start": upload_min_iso, "end": upload_max_iso}
+
+
 def get_or_create_session(session_id: str | None) -> tuple[str, dict]:
     sid = session_id if session_id and isinstance(session_id, str) and session_id.strip() else str(uuid.uuid4())
     sess = session_store.get(sid)
@@ -667,10 +717,7 @@ async def upload(file: UploadFile = File(...)):
 @app.post("/api/upload/current")
 async def upload_current(file: UploadFile = File(...), session_id: str = Form(default=None)):
     content = await file.read()
-    try:
-        text = content.decode("utf-8")
-    except UnicodeDecodeError:
-        text = content.decode("latin-1")
+    text = decode_uploaded_content(content)
 
     rows = parse_lines(text)
     fname = file.filename or "REGLEMENT.txt"
@@ -696,53 +743,70 @@ async def upload_current(file: UploadFile = File(...), session_id: str = Form(de
     return JSONResponse(payload)
 
 
-@app.post("/api/upload/history")
-async def upload_history(files: list[UploadFile] = File(...), session_id: str = Form(default=None)):
-    all_rows: list[dict] = []
-    filenames: list[str] = []
-
-    for file in files:
-        content = await file.read()
-        try:
-            text = content.decode("utf-8")
-        except UnicodeDecodeError:
-            text = content.decode("latin-1")
-        fname = file.filename or "history.txt"
-        all_rows.extend(parse_lines(text))
-        filenames.append(fname)
-
+@app.post("/api/upload/history-file")
+async def upload_history_file(file: UploadFile = File(...), session_id: str = Form(default=None)):
+    fname = file.filename or "history.txt"
     cleanup_sessions()
     sid, sess = get_or_create_session(session_id)
+    content = await file.read()
+    rows = parse_lines(decode_uploaded_content(content))
+
+    if not rows:
+        return JSONResponse(
+            {
+                "success": False,
+                "session_id": sid,
+                "filename": fname,
+                "error": f"Aucune ligne valide trouvée dans {fname}. Vérifiez le format texte ';' attendu.",
+            }
+        )
+
     now = time.time()
-    upload_min_date, upload_max_date = get_rows_bounds(all_rows)
-    upload_min_iso = date_to_iso(upload_min_date)
-    upload_max_iso = date_to_iso(upload_max_date)
-
-    history_batches = sess.get("history_batches", [])
-    if upload_min_date and upload_max_date:
-        remaining_batches: list[dict] = []
-        for batch in history_batches:
-            batch_min = parse_iso_date_optional(batch.get("min_date"))
-            batch_max = parse_iso_date_optional(batch.get("max_date"))
-            if batch_min and batch_max and not (upload_max_date < batch_min or upload_min_date > batch_max):
-                continue
-            remaining_batches.append(batch)
-        history_batches = remaining_batches
-    else:
-        history_batches = []
-
-    history_batches.append(
+    uploaded_coverage = merge_history_batch(sess, rows, [fname], now)
+    save_sessions()
+    return JSONResponse(
         {
-            "rows": all_rows,
-            "filenames": filenames,
-            "uploaded_at": now,
-            "expires_at": now + SESSION_TTL,
-            "min_date": upload_min_iso,
-            "max_date": upload_max_iso,
+            "success": True,
+            "session_id": sid,
+            "filename": fname,
+            "row_count": len(rows),
+            "uploaded_coverage": uploaded_coverage,
+            "retention_days": 7,
+            "storage_status": summarize_session(sess),
         }
     )
-    sess["history_batches"] = history_batches
-    sess["last_updated_at"] = now
+
+
+@app.post("/api/upload/history")
+async def upload_history(files: list[UploadFile] = File(...), session_id: str = Form(default=None)):
+    cleanup_sessions()
+    sid, sess = get_or_create_session(session_id)
+    all_rows: list[dict] = []
+    filenames: list[str] = []
+    uploaded_coverage = {"start": None, "end": None}
+    for file in files:
+        content = await file.read()
+        rows = parse_lines(decode_uploaded_content(content))
+        if not rows:
+            continue
+        fname = file.filename or "history.txt"
+        now = time.time()
+        uploaded_coverage = merge_history_batch(sess, rows, [fname], now)
+        all_rows.extend(rows)
+        filenames.append(fname)
+
+    if not all_rows:
+        return JSONResponse(
+            {
+                "session_id": sid,
+                "retention_days": 7,
+                "uploaded_coverage": {"start": None, "end": None},
+                "warnings": ["Aucun fichier historique valide n'a été importé."],
+                "source_files": [],
+                "storage_status": summarize_session(sess),
+            }
+        )
+
     save_sessions()
 
     label = f"{len(filenames)} fichier(s) historique"
@@ -755,7 +819,7 @@ async def upload_history(files: list[UploadFile] = File(...), session_id: str = 
     )
     payload["session_id"] = sid
     payload["retention_days"] = 7
-    payload["uploaded_coverage"] = {"start": upload_min_iso, "end": upload_max_iso}
+    payload["uploaded_coverage"] = uploaded_coverage
     return JSONResponse(payload)
 
 
