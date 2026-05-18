@@ -697,7 +697,7 @@ function showEmpty(message) {
 }
 
 function escapeHtml(value) {
-  return (value || '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  return (value || '').replace(/[&<>"'`]/g, match => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;', '`': '&#96;' }[match]));
 }
 
 function renderHistoryProgress(state) {
@@ -709,8 +709,8 @@ function renderHistoryProgress(state) {
   const status = state.done ? 'Terminé' : 'Import en cours';
   const meta = state.processed + ' / ' + state.total + ' fichier(s) traités • '
     + state.successes.length + ' succès • ' + state.failures.length + ' échec(s)';
-  const successItems = state.successes.map(x => '<li class="history-success">✔ ' + escapeHtml(x) + '</li>').join('');
-  const failureItems = state.failures.map(x => '<li class="history-failure">✖ ' + escapeHtml(x.filename) + ' — ' + escapeHtml(x.error) + '</li>').join('');
+  const successItems = state.successes.map(filename => '<li class="history-success">✔ ' + escapeHtml(filename) + '</li>').join('');
+  const failureItems = state.failures.map(failure => '<li class="history-failure">✖ ' + escapeHtml(failure.filename) + ' — ' + escapeHtml(failure.error) + '</li>').join('');
   historyProgress.innerHTML = ''
     + '<div class="history-progress-title">' + status + ' · Import des historiques</div>'
     + '<div class="history-progress-meta">' + meta + '</div>'
@@ -885,7 +885,7 @@ async function uploadHistoryFiles(files) {
         if (!firstError) firstError = msg;
       }
     } catch (e) {
-      const msg = "Échec réseau pendant l'import.";
+      const msg = "Échec réseau pendant l'import: " + (e?.message || "erreur inconnue");
       progress.failures.push({ filename: file.name, error: msg });
       if (!firstError) firstError = msg;
     }

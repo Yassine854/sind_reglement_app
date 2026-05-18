@@ -263,6 +263,7 @@ def get_rows_bounds(rows: list[dict]) -> tuple[date | None, date | None]:
 
 
 def decode_uploaded_content(content: bytes) -> str:
+    """Decode uploaded text using UTF-8 first, then Latin-1 fallback."""
     try:
         return content.decode("utf-8")
     except UnicodeDecodeError:
@@ -270,6 +271,17 @@ def decode_uploaded_content(content: bytes) -> str:
 
 
 def merge_history_batch(sess: dict, rows: list[dict], filenames: list[str], now: float) -> dict:
+    """Merge one uploaded history batch, replacing overlapping stored date ranges.
+
+    Args:
+        sess: Session dictionary containing current and historical uploaded data.
+        rows: Parsed rows extracted from the uploaded historical file(s).
+        filenames: Source filenames represented by this batch.
+        now: Current unix timestamp used for retention metadata.
+
+    Returns:
+        Dict with "start" and "end" ISO dates for the uploaded coverage range.
+    """
     upload_min_date, upload_max_date = get_rows_bounds(rows)
     upload_min_iso = date_to_iso(upload_min_date)
     upload_max_iso = date_to_iso(upload_max_date)
@@ -280,7 +292,7 @@ def merge_history_batch(sess: dict, rows: list[dict], filenames: list[str], now:
         for batch in history_batches:
             batch_min = parse_iso_date_optional(batch.get("min_date"))
             batch_max = parse_iso_date_optional(batch.get("max_date"))
-            if batch_min and batch_max and not (upload_max_date < batch_min or upload_min_date > batch_max):
+            if batch_min and batch_max and (upload_max_date >= batch_min and upload_min_date <= batch_max):
                 continue
             remaining_batches.append(batch)
         history_batches = remaining_batches
@@ -745,7 +757,7 @@ async def upload_history_file(file: UploadFile = File(...), session_id: str = Fo
                 "success": False,
                 "session_id": sid,
                 "filename": fname,
-                "error": f"Aucune ligne valide trouvée dans {fname}.",
+                "error": f"Aucune ligne valide trouvée dans {fname}. Vérifiez le format texte ';' attendu.",
             }
         )
 
