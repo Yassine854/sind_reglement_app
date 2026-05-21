@@ -866,10 +866,17 @@ async function uploadHistoryFiles(files) {
   const progress = { total: files.length, processed: 0, successes: [], failures: [], done: false };
   renderHistoryProgress(progress);
   let firstError = null;
+  // The first file clears all previous history so the stored range matches
+  // exactly what the user is uploading now (no stale data from past sessions).
+  let isFirstFile = true;
   for (const file of files) {
     const fd = new FormData();
     fd.append('file', file);
     fd.append('session_id', SESSION_ID);
+    if (isFirstFile) {
+      fd.append('clear_history_before', 'true');
+      isFirstFile = false;
+    }
     try {
       const res = await fetch('/api/upload/history-file', { method: 'POST', body: fd });
       const data = await res.json();
@@ -912,7 +919,7 @@ async function uploadHistoryFiles(files) {
   }
   showEmpty(
     progress.successes.length + " fichier(s) historique importé(s) sur " + progress.total
-    + ". Les périodes qui se chevauchent ont été remplacées. Sélectionnez une période pour filtrer."
+    + ". L'historique a été mis à jour. Sélectionnez une période ci-dessus pour filtrer."
   );
 }
 

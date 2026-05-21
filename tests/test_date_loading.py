@@ -6,6 +6,7 @@ from io import BytesIO
 from pathlib import Path
 from unittest.mock import patch
 
+from fastapi import BackgroundTasks
 from starlette.datastructures import UploadFile
 
 from app import (
@@ -171,9 +172,18 @@ class ReglementDateLoadingTests(unittest.TestCase):
             "CESP-26-05-0000826;26-99-CAM39-00416;20260502;20260510;BJSSE;ESP;CLS05585;;;FAC-BJS-26-00415;120.1\n",
         )
 
-        first_payload = json.loads(asyncio.run(upload_history_file(file=april, session_id=sid)).body)
-        invalid_payload = json.loads(asyncio.run(upload_history_file(file=invalid, session_id=sid)).body)
-        second_payload = json.loads(asyncio.run(upload_history_file(file=may, session_id=sid)).body)
+        bg = BackgroundTasks()
+        first_payload = json.loads(asyncio.run(
+            upload_history_file(
+                background_tasks=bg, file=april, session_id=sid, clear_history_before="true"
+            )
+        ).body)
+        invalid_payload = json.loads(asyncio.run(
+            upload_history_file(background_tasks=bg, file=invalid, session_id=sid)
+        ).body)
+        second_payload = json.loads(asyncio.run(
+            upload_history_file(background_tasks=bg, file=may, session_id=sid)
+        ).body)
 
         self.assertTrue(first_payload["success"])
         self.assertFalse(invalid_payload["success"])
@@ -198,6 +208,76 @@ class ReglementDateLoadingTests(unittest.TestCase):
         self.assertGreater(payload["ttl_remaining_days"], 6.9)
         self.assertLessEqual(payload["ttl_remaining_days"], 7.0)
         self.assertEqual(SESSION_TTL, 7 * 24 * 60 * 60)
+
+    def test_default_dashboard_hosted_friendly_message_when_no_path_configured(self):
+        with patch("app.DEFAULT_CURRENT_REGLEMENT_FILE", ""):
+            response = asyncio.run(get_default_dashboard())
+
+        payload = json.loads(response.body)
+        self.assertEqual(payload["grand_count"], 0)
+        self.assertTrue(payload["warnings"])
+        self.assertNotIn("D:", payload["warnings"][0])
+        self.assertIn("Aucun fichier", payload["warnings"][0])
+
+    def test_range_endpoint_hosted_friendly_message_when_no_paths_configured(self):
+        with patch("app.DEFAULT_CURRENT_REGLEMENT_FILE", ""), patch(
+            "app.DEFAULT_HISTORY_REGLEMENTS_DIR", ""
+        ):
+            response = asyncio.run(
+                get_dashboard_for_range(start_date="2026-01-01", end_date="2026-05-31")
+            )
+
+        payload = json.loads(response.body)
+        self.assertEqual(payload["grand_count"], 0)
+        self.assertTrue(payload["warnings"])
+        self.assertNotIn("D:", payload["warnings"][0])
+        self.assertIn("Aucun fichier", payload["warnings"][0])
+
+    def test_clear_history_before_removes_stale_batches(self):
+        """Uploading a new batch with clear_history_before erases old non-overlapping data."""
+        sid = "session-clear-history"
+        # Simulate previous uploads: Jan through Aug (8 separate months)
+        months = [
+            ("reglement_jan.txt", "20260101", "20260131"),
+            ("reglement_feb.txt", "20260201", "20260228"),
+            ("reglement_mar.txt", "20260301", "20260331"),
+            ("reglement_apr.txt", "20260401", "20260430"),
+            ("reglement_may.txt", "20260501", "20260531"),
+            ("reglement_jun.txt", "20260601", "20260630"),
+            ("reglement_jul.txt", "20260701", "20260731"),
+            ("reglement_aug.txt", "20260801", "20260831"),
+        ]
+        bg = BackgroundTasks()
+        for fname, d1, d2 in months:
+            f = self._upload_file(
+                fname,
+                f"CTRT-26-01-0000001;26-99-CAM50-00001;{d1};{d2};NAB;TRT;CLS06386;;ATB;ACF-NAB-26-00001;100.0\n",
+            )
+            asyncio.run(upload_history_file(background_tasks=bg, file=f, session_id=sid))
+
+        # Now re-upload only Jan-May with clear_history_before=true on first file
+        new_months = [
+            ("reglement_jan_new.txt", "20260101", "20260131"),
+            ("reglement_feb_new.txt", "20260201", "20260228"),
+            ("reglement_mar_new.txt", "20260301", "20260331"),
+            ("reglement_apr_new.txt", "20260401", "20260430"),
+            ("reglement_may_new.txt", "20260501", "20260531"),
+        ]
+        is_first = True
+        for fname, d1, d2 in new_months:
+            f = self._upload_file(
+                fname,
+                f"CTRT-26-01-0000002;26-99-CAM50-00002;{d1};{d2};NAB;TRT;CLS06386;;ATB;ACF-NAB-26-00002;200.0\n",
+            )
+            clear_flag = "true" if is_first else None
+            asyncio.run(upload_history_file(
+                background_tasks=bg, file=f, session_id=sid, clear_history_before=clear_flag
+            ))
+            is_first = False
+
+        status_payload = json.loads(asyncio.run(session_status(session_id=sid)).body)
+        # Jun-Aug stale data must be gone; coverage must end in May
+        self.assertEqual(status_payload["coverage_end"][:7], "2026-05")
 
 
 if __name__ == "__main__":
