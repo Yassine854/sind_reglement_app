@@ -273,7 +273,15 @@ def decode_uploaded_content(content: bytes) -> str:
 
 
 def merge_history_batch(sess: dict, rows: list[dict], filenames: list[str], now: float) -> dict:
-    """Merge one uploaded history batch, replacing overlapping stored date ranges.
+    """Append one uploaded history batch to the session.
+
+    Each uploaded file is stored as an independent batch.  Overlap-based removal
+    is intentionally absent: settlement dates from real-world règlement files can
+    span several months ahead of the transaction date, so a naïve date-range
+    intersection check would silently delete valid batches uploaded earlier in the
+    same session.  Callers that need to start fresh (e.g. a new upload session)
+    must clear ``sess["history_batches"]`` themselves via the
+    ``clear_history_before`` flag before the first call.
 
     Args:
         sess: Session dictionary containing current and historical uploaded data.
@@ -289,16 +297,6 @@ def merge_history_batch(sess: dict, rows: list[dict], filenames: list[str], now:
     upload_max_iso = date_to_iso(upload_max_date)
 
     history_batches = sess.get("history_batches", [])
-    if upload_min_date and upload_max_date:
-        remaining_batches: list[dict] = []
-        for batch in history_batches:
-            batch_min = parse_iso_date_optional(batch.get("min_date"))
-            batch_max = parse_iso_date_optional(batch.get("max_date"))
-            if batch_min and batch_max and (upload_max_date >= batch_min and upload_min_date <= batch_max):
-                continue
-            remaining_batches.append(batch)
-        history_batches = remaining_batches
-
     history_batches.append(
         {
             "rows": rows,

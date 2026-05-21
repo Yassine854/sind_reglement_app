@@ -134,7 +134,8 @@ class ReglementDateLoadingTests(unittest.TestCase):
         self.assertEqual(payload["mode"], "date_range")
         self.assertEqual(payload["grand_count"], 1)
 
-    def test_history_upload_replaces_overlapping_batches(self):
+    def test_history_upload_accumulates_all_batches(self):
+        """Each history upload call appends a new batch; no batch is silently removed."""
         sid = "session-overlap"
         first = self._upload_file(
             "reglement_avril.txt",
@@ -155,8 +156,12 @@ class ReglementDateLoadingTests(unittest.TestCase):
 
         status_payload = json.loads(asyncio.run(session_status(session_id=sid)).body)
         self.assertTrue(status_payload["valid"])
-        self.assertEqual(status_payload["stored_batch_count"], 2)
-        self.assertEqual(status_payload["history_filenames"], ["reglement_mai.txt", "reglement_avril_maj.txt"])
+        # All three batches must be present – no silent overlap removal.
+        self.assertEqual(status_payload["stored_batch_count"], 3)
+        self.assertEqual(
+            status_payload["history_filenames"],
+            ["reglement_avril.txt", "reglement_mai.txt", "reglement_avril_maj.txt"],
+        )
         self.assertEqual(status_payload["coverage_start"], "2026-04-24")
         self.assertEqual(status_payload["coverage_end"], "2026-05-10")
 
@@ -278,6 +283,66 @@ class ReglementDateLoadingTests(unittest.TestCase):
         status_payload = json.loads(asyncio.run(session_status(session_id=sid)).body)
         # Jun-Aug stale data must be gone; coverage must end in May
         self.assertEqual(status_payload["coverage_end"][:7], "2026-05")
+
+    def test_multi_file_upload_all_queryable_with_settlement_date_spillover(self):
+        """Reproduces the reported bug: 3 history files whose settlement dates spill
+        into the next month must ALL remain queryable after sequential upload."""
+        sid = "session-spillover"
+        bg = BackgroundTasks()
+
+        # File A: April 2026 transactions, settlements late April
+        file_a = self._upload_file(
+            "REGLEMENT_au 30 avril2026.txt",
+            "CTRT-26-04-0000001;26-99-CAM50-00001;20260401;20260424;NAB;TRT;CLS06386;;ATB;ACF-NAB-26-00001;100.0\n",
+        )
+        # File B: December 2025 transactions, settlements spilling into January 2026
+        file_b = self._upload_file(
+            "REGLEMENT_Décembre2025.txt",
+            "CTRT-25-12-0000001;26-99-CAM50-00002;20251201;20260110;NAB;TRT;CLS06386;;ATB;ACF-NAB-25-00001;200.0\n",
+        )
+        # File C: Jan–Nov 2025 transactions, settlements spilling into December 2025
+        # and even into early 2026 – this is the file that previously wiped B (and A).
+        file_c = self._upload_file(
+            "REGLEMENT_du 01 Janv au 30 Nov2025.txt",
+            "\n".join([
+                "CTRT-25-01-0000001;26-99-CAM50-00003;20250101;20250120;NAB;TRT;CLS06386;;ATB;ACF-NAB-25-00002;50.0",
+                # November transaction settled in December 2025 → overlaps with File B's range
+                "CTRT-25-11-0000002;26-99-CAM50-00004;20251128;20251215;NAB;TRT;CLS06386;;ATB;ACF-NAB-25-00003;75.0",
+                # Late transaction settled in February 2026 → would previously overlap File A too
+                "CTRT-25-10-0000003;26-99-CAM50-00005;20251001;20260210;NAB;TRT;CLS06386;;ATB;ACF-NAB-25-00004;90.0",
+            ]) + "\n",
+        )
+
+        # First file clears history; subsequent files accumulate.
+        asyncio.run(upload_history_file(
+            background_tasks=bg, file=file_a, session_id=sid, clear_history_before="true"
+        ))
+        asyncio.run(upload_history_file(background_tasks=bg, file=file_b, session_id=sid))
+        asyncio.run(upload_history_file(background_tasks=bg, file=file_c, session_id=sid))
+
+        status_payload = json.loads(asyncio.run(session_status(session_id=sid)).body)
+        self.assertTrue(status_payload["valid"])
+        # All 3 batches must be present – none removed by accidental date-range overlap.
+        self.assertEqual(status_payload["stored_batch_count"], 3)
+        self.assertIn("REGLEMENT_au 30 avril2026.txt", status_payload["history_filenames"])
+        self.assertIn("REGLEMENT_Décembre2025.txt", status_payload["history_filenames"])
+        self.assertIn("REGLEMENT_du 01 Janv au 30 Nov2025.txt", status_payload["history_filenames"])
+
+        # Each date range must be independently filterable.
+        response_apr = json.loads(asyncio.run(
+            get_dashboard_for_range(start_date="2026-04-01", end_date="2026-04-30", session_id=sid)
+        ).body)
+        self.assertGreater(response_apr["grand_count"], 0, "April 2026 rows should be found")
+
+        response_dec = json.loads(asyncio.run(
+            get_dashboard_for_range(start_date="2025-12-01", end_date="2025-12-31", session_id=sid)
+        ).body)
+        self.assertGreater(response_dec["grand_count"], 0, "December 2025 rows should be found")
+
+        response_jan = json.loads(asyncio.run(
+            get_dashboard_for_range(start_date="2025-01-01", end_date="2025-01-31", session_id=sid)
+        ).body)
+        self.assertGreater(response_jan["grand_count"], 0, "January 2025 rows should be found")
 
 
 if __name__ == "__main__":
