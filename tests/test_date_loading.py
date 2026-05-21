@@ -35,7 +35,29 @@ class ReglementDateLoadingTests(unittest.TestCase):
         rows = parse_lines(text)
 
         self.assertEqual(len(rows), 1)
-        self.assertEqual(rows[0]["reglement_date_iso"], "2026-05-25")
+        self.assertEqual(rows[0]["reglement_date_iso"], "2026-03-04")
+
+    def test_first_date_field_drives_coverage_and_filtering(self):
+        sid = "session-first-date"
+        file = self._upload_file(
+            "REGLEMENT_avril.txt",
+            "CTRT-26-04-0000078;;20260427;20260831;TUN;TRT;CLT06449;;BT;FAC-TUN-26-13006;1538.2\n",
+        )
+
+        asyncio.run(upload_history(files=[file], session_id=sid))
+
+        status_payload = json.loads(asyncio.run(session_status(session_id=sid)).body)
+        self.assertEqual(status_payload["coverage_start"], "2026-04-27")
+        self.assertEqual(status_payload["coverage_end"], "2026-04-27")
+
+        april = json.loads(asyncio.run(
+            get_dashboard_for_range(start_date="2026-04-01", end_date="2026-04-30", session_id=sid)
+        ).body)
+        august = json.loads(asyncio.run(
+            get_dashboard_for_range(start_date="2026-08-01", end_date="2026-08-31", session_id=sid)
+        ).body)
+        self.assertEqual(april["grand_count"], 1)
+        self.assertEqual(august["grand_count"], 0)
 
     def test_default_dashboard_reads_current_file(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -98,7 +120,7 @@ class ReglementDateLoadingTests(unittest.TestCase):
         payload = json.loads(response.body)
         self.assertEqual(payload["mode"], "date_range")
         self.assertEqual(payload["grand_count"], 3)
-        self.assertAlmostEqual(payload["grand_total"], 576.89, places=3)
+        self.assertAlmostEqual(payload["grand_total"], 676.89, places=3)
         self.assertEqual(payload["date_range"], {"start": "2026-04-25", "end": "2026-05-25"})
         self.assertEqual(len(payload["source_files"]), 3)
 
@@ -162,8 +184,8 @@ class ReglementDateLoadingTests(unittest.TestCase):
             status_payload["history_filenames"],
             ["reglement_avril.txt", "reglement_mai.txt", "reglement_avril_maj.txt"],
         )
-        self.assertEqual(status_payload["coverage_start"], "2026-04-24")
-        self.assertEqual(status_payload["coverage_end"], "2026-05-10")
+        self.assertEqual(status_payload["coverage_start"], "2026-04-01")
+        self.assertEqual(status_payload["coverage_end"], "2026-05-02")
 
     def test_history_file_upload_isolated_failures_do_not_abort_sequence(self):
         sid = "session-sequential"
@@ -197,8 +219,8 @@ class ReglementDateLoadingTests(unittest.TestCase):
         status_payload = json.loads(asyncio.run(session_status(session_id=sid)).body)
         self.assertTrue(status_payload["valid"])
         self.assertEqual(status_payload["history_filenames"], ["reglement_avril.txt", "reglement_mai.txt"])
-        self.assertEqual(status_payload["coverage_start"], "2026-04-24")
-        self.assertEqual(status_payload["coverage_end"], "2026-05-10")
+        self.assertEqual(status_payload["coverage_start"], "2026-04-01")
+        self.assertEqual(status_payload["coverage_end"], "2026-05-02")
 
     def test_session_status_reports_seven_day_retention(self):
         sid = "session-retention"
@@ -397,7 +419,7 @@ class ReglementDateLoadingTests(unittest.TestCase):
         asyncio.run(upload_history_file(background_tasks=bg, file=may_file, session_id=sid))
 
         status_payload = json.loads(asyncio.run(session_status(session_id=sid)).body)
-        self.assertEqual(status_payload["coverage_start"], "2026-01-02")
+        self.assertEqual(status_payload["coverage_start"], "2026-01-01")
         self.assertEqual(status_payload["coverage_end"], "2026-05-19")
 
 
