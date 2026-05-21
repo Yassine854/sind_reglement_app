@@ -173,9 +173,17 @@ class ReglementDateLoadingTests(unittest.TestCase):
         )
 
         bg = BackgroundTasks()
-        first_payload = json.loads(asyncio.run(upload_history_file(background_tasks=bg, file=april, session_id=sid, clear_history_before="true")).body)
-        invalid_payload = json.loads(asyncio.run(upload_history_file(background_tasks=bg, file=invalid, session_id=sid)).body)
-        second_payload = json.loads(asyncio.run(upload_history_file(background_tasks=bg, file=may, session_id=sid)).body)
+        first_payload = json.loads(asyncio.run(
+            upload_history_file(
+                background_tasks=bg, file=april, session_id=sid, clear_history_before="true"
+            )
+        ).body)
+        invalid_payload = json.loads(asyncio.run(
+            upload_history_file(background_tasks=bg, file=invalid, session_id=sid)
+        ).body)
+        second_payload = json.loads(asyncio.run(
+            upload_history_file(background_tasks=bg, file=may, session_id=sid)
+        ).body)
 
         self.assertTrue(first_payload["success"])
         self.assertFalse(invalid_payload["success"])
@@ -262,7 +270,9 @@ class ReglementDateLoadingTests(unittest.TestCase):
                 f"CTRT-26-01-0000002;26-99-CAM50-00002;{d1};{d2};NAB;TRT;CLS06386;;ATB;ACF-NAB-26-00002;200.0\n",
             )
             clear_flag = "true" if is_first else None
-            asyncio.run(upload_history_file(background_tasks=bg, file=f, session_id=sid, clear_history_before=clear_flag))
+            asyncio.run(upload_history_file(
+                background_tasks=bg, file=f, session_id=sid, clear_history_before=clear_flag
+            ))
             is_first = False
 
         status_payload = json.loads(asyncio.run(session_status(session_id=sid)).body)

@@ -1,6 +1,5 @@
 from collections import defaultdict
 from datetime import date, datetime
-import asyncio
 import json
 import os
 import re
