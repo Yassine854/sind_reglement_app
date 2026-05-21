@@ -344,25 +344,16 @@ class ReglementDateLoadingTests(unittest.TestCase):
         ).body)
         self.assertGreater(response_jan["grand_count"], 0, "January 2025 rows should be found")
 
-    def test_coverage_range_uses_first_last_row_not_settlement_outliers(self):
-        """Display range must use first/last valid row dates, not min/max of all settlement dates.
-
-        Reproduces the reported bug: a May 2026 file with some rows whose
-        settlement date falls in July was showing 'mai 2026 → juillet 2026'
-        instead of 'mai 2026 → mai 2026' in the coverage banner.
-        The fix derives the displayed range from the first valid row date and
-        the last valid row date, ignoring outlier settlement dates in the middle.
-        """
-        sid = "session-first-last-display"
+    def test_coverage_range_uses_true_bounds_for_unsorted_file_rows(self):
+        """Display range must use min/max of all parsed row dates in each file."""
+        sid = "session-unsorted-bounds"
         bg = BackgroundTasks()
-        # May file: first row date 01/05, last row date 19/05,
-        # but a middle row has an anomalous July settlement date.
+        # File is intentionally unsorted by règlement date.
         may_file = self._upload_file(
             "REGLEMENT_mai2026.txt",
             "\n".join([
+                "CESP-26-05-0007369;26-99-CAM19-01076;20260519;20260519;TUN;ESP;CLT06374;;;FAC-TUN-26-16975;365.609",
                 "CCHQR-26-05-0000001;26-99-CAM53-01127;20260501;20260501;NAB;CHQ;CLN00102;0000658;STB;;0.399",
-                # Middle row: settlement date in July – must NOT expand the displayed range
-                "CESP-26-05-0001000;26-99-CAM19-00999;20260510;20260712;TUN;ESP;CLT00100;;;FAC-TUN-26-09999;100.0",
                 "CESP-26-05-0007369;26-99-CAM19-01076;20260519;20260519;TUN;ESP;CLT06374;;;FAC-TUN-26-16975;365.609",
             ]),
         )
@@ -373,25 +364,27 @@ class ReglementDateLoadingTests(unittest.TestCase):
         )
 
         status_payload = json.loads(asyncio.run(session_status(session_id=sid)).body)
-        # Display range must be May (first row 01/05, last row 19/05), NOT July
+        # Range must be min/max across all valid rows, independent of row order.
         self.assertEqual(status_payload["coverage_start"], "2026-05-01")
         self.assertEqual(status_payload["coverage_end"], "2026-05-19")
 
-    def test_multi_file_coverage_aggregates_per_file_edge_dates(self):
-        """Overall coverage is the span of per-file first/last row dates across all uploads."""
-        sid = "session-multi-edge"
+    def test_multi_file_coverage_aggregates_min_max_across_uploaded_files(self):
+        """Overall coverage must aggregate true bounds across all uploaded files."""
+        sid = "session-multi-bounds"
         bg = BackgroundTasks()
 
         jan_file = self._upload_file(
             "REGLEMENT_jan2026.txt",
-            "CTRT-26-01-0000001;26-99-CAM50-00001;20260101;20260115;NAB;TRT;CLS06386;;ATB;ACF-NAB-26-00001;100.0\n",
+            "\n".join([
+                "CTRT-26-01-0000001;26-99-CAM50-00001;20260101;20260115;NAB;TRT;CLS06386;;ATB;ACF-NAB-26-00001;100.0",
+                "CTRT-26-01-0000002;26-99-CAM50-00002;20260101;20260102;NAB;TRT;CLS06386;;ATB;ACF-NAB-26-00002;120.0",
+            ]),
         )
-        # May file: anomalous July settlement date in the middle should not affect range
         may_file = self._upload_file(
             "REGLEMENT_mai2026.txt",
             "\n".join([
+                "CESP-26-05-0007369;26-99-CAM19-01076;20260519;20260519;TUN;ESP;CLT06374;;;FAC-TUN-26-16975;365.609",
                 "CCHQR-26-05-0000001;26-99-CAM53-01127;20260501;20260501;NAB;CHQ;CLN00102;0000658;STB;;0.399",
-                "CESP-26-05-0001000;26-99-CAM19-00999;20260510;20260712;TUN;ESP;CLT00100;;;FAC-TUN-26-09999;100.0",
                 "CESP-26-05-0007369;26-99-CAM19-01076;20260519;20260519;TUN;ESP;CLT06374;;;FAC-TUN-26-16975;365.609",
             ]),
         )
@@ -404,9 +397,7 @@ class ReglementDateLoadingTests(unittest.TestCase):
         asyncio.run(upload_history_file(background_tasks=bg, file=may_file, session_id=sid))
 
         status_payload = json.loads(asyncio.run(session_status(session_id=sid)).body)
-        # Overall start: Jan file first row (2026-01-15 is parts[3])
-        self.assertEqual(status_payload["coverage_start"], "2026-01-15")
-        # Overall end: May file last row (2026-05-19), NOT July
+        self.assertEqual(status_payload["coverage_start"], "2026-01-02")
         self.assertEqual(status_payload["coverage_end"], "2026-05-19")
 
 

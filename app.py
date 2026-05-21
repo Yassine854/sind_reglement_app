@@ -186,8 +186,8 @@ def parse_lines(text: str):
         code = parts[0]
         ref2 = parts[1]
         site = parts[4]
-        # Le 4e champ contient la date de règlement attendue ; on replie sur le 3e si besoin.
-        reglement_date = parse_reglement_date(parts[3]) or parse_reglement_date(parts[2])
+        # Le 4e champ contient la date de règlement attendue (format YYYYMMDD).
+        reglement_date = parse_reglement_date(parts[3])
         try:
             amount = float(parts[-1].replace(",", "."))
         except ValueError:
@@ -264,26 +264,6 @@ def get_rows_bounds(rows: list[dict]) -> tuple[date | None, date | None]:
     return min(dates), max(dates)
 
 
-def get_rows_edge_dates(rows: list[dict]) -> tuple[date | None, date | None]:
-    """Return the règlement date of the first valid row and the last valid row.
-
-    Unlike :func:`get_rows_bounds`, this does not scan every row for the
-    global minimum and maximum: it returns the date of the first parsed row
-    and the date of the last parsed row.  When uploaded files are ordered
-    chronologically this gives a more trustworthy displayed range that is
-    immune to isolated settlement-date outliers scattered within the file.
-    """
-    first: date | None = None
-    last: date | None = None
-    for r in rows:
-        d = r.get("reglement_date")
-        if isinstance(d, date):
-            if first is None:
-                first = d
-            last = d
-    return first, last
-
-
 def decode_uploaded_content(content: bytes) -> str:
     """Decode uploaded text using UTF-8 first, then Latin-1 fallback."""
     try:
@@ -312,7 +292,7 @@ def merge_history_batch(sess: dict, rows: list[dict], filenames: list[str], now:
     Returns:
         Dict with "start" and "end" ISO dates for the uploaded coverage range.
     """
-    upload_min_date, upload_max_date = get_rows_edge_dates(rows)
+    upload_min_date, upload_max_date = get_rows_bounds(rows)
     upload_min_iso = date_to_iso(upload_min_date)
     upload_max_iso = date_to_iso(upload_max_date)
 
@@ -358,25 +338,17 @@ def get_session_rows(sess: dict) -> tuple[list[dict], list[str]]:
 
 
 def get_session_coverage(sess: dict) -> tuple[date | None, date | None]:
-    """Compute the displayed coverage range from per-file first/last row dates.
-
-    For the current file the edge dates are derived on-the-fly from the
-    in-memory rows via :func:`get_rows_edge_dates`.  For each history batch
-    the pre-computed ``min_date``/``max_date`` values (stored as first/last
-    row dates when the batch was uploaded) are used directly, avoiding a
-    full re-scan and eliminating the risk that isolated settlement-date
-    outliers scattered within a file inflate the displayed range.
-    """
+    """Compute displayed coverage from true min/max règlement dates in parsed rows."""
     starts: list[date] = []
     ends: list[date] = []
 
     current_rows = sess.get("current_rows", [])
     if current_rows:
-        first, last = get_rows_edge_dates(current_rows)
-        if first:
-            starts.append(first)
-        if last:
-            ends.append(last)
+        batch_min, batch_max = get_rows_bounds(current_rows)
+        if batch_min:
+            starts.append(batch_min)
+        if batch_max:
+            ends.append(batch_max)
 
     for batch in sess.get("history_batches", []):
         batch_min = parse_iso_date_optional(batch.get("min_date"))
