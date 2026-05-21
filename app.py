@@ -1,12 +1,13 @@
 from collections import defaultdict
 from datetime import date, datetime
+import asyncio
 import json
 import os
 import re
 import time
 import uuid
 
-from fastapi import FastAPI, File, Form, Query, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, Form, Query, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -20,8 +21,10 @@ TYPE_MAP = {
 }
 
 VALID_SITES = {"SFX", "MAH", "NAB", "SSE", "TUN"}
-DEFAULT_CURRENT_REGLEMENT_FILE = r"D:\TDB SINDBAD\Fichiers Sources\REGLEMENT.txt"
-DEFAULT_HISTORY_REGLEMENTS_DIR = r"D:\TDB SINDBAD\Fichiers Sources\Réglements"
+# Local-dev fallback paths (empty by default for hosted/Render deployment).
+# Set via environment variables; leave blank on Render.
+DEFAULT_CURRENT_REGLEMENT_FILE = os.environ.get("DEFAULT_REGLEMENT_FILE", "")
+DEFAULT_HISTORY_REGLEMENTS_DIR = os.environ.get("DEFAULT_HISTORY_DIR", "")
 
 # ── Session storage (7 days) ──────────────────────────────────────────────────
 SESSION_TTL = 7 * 24 * 60 * 60  # seconds
@@ -623,7 +626,21 @@ async def get_default_dashboard(session_id: str = None):
             )
         )
 
-    # Fallback: read from default file path (works locally, returns warning on Render)
+    # No session and no local path configured: show hosted-friendly empty state
+    if not DEFAULT_CURRENT_REGLEMENT_FILE:
+        return JSONResponse(
+            build_upload_payload(
+                [],
+                "Aucun fichier importé",
+                mode="default",
+                warnings=[
+                    "Aucun fichier du mois courant importé. "
+                    "Utilisez le bouton ci-dessous pour importer un fichier."
+                ],
+            )
+        )
+
+    # Fallback for local development when a path is explicitly configured
     current_file = DEFAULT_CURRENT_REGLEMENT_FILE
     rows, source_files, warnings = load_rows_from_paths([current_file])
     label = f"Mois en cours · {os.path.basename(current_file)}"
@@ -670,7 +687,21 @@ async def get_dashboard_for_range(
         source_files = [f for f in ([sess.get("current_filename")] + history_filenames) if f]
         storage_status = summarize_session(sess)
     else:
-        # Fallback: read from filesystem (for local use / backward-compat)
+        # No session: show hosted-friendly message when no local paths are configured
+        if not DEFAULT_HISTORY_REGLEMENTS_DIR and not DEFAULT_CURRENT_REGLEMENT_FILE:
+            return JSONResponse(
+                build_upload_payload(
+                    [],
+                    label,
+                    mode="date_range",
+                    date_range={"start": start.isoformat(), "end": end.isoformat()},
+                    warnings=[
+                        "Aucun fichier importé. "
+                        "Veuillez importer les fichiers pour filtrer par date."
+                    ],
+                )
+            )
+        # Fallback for local development when paths are explicitly configured
         history_files, warnings = list_reglement_files(DEFAULT_HISTORY_REGLEMENTS_DIR)
         all_rows, source_files, load_warnings = load_rows_from_paths(history_files + [DEFAULT_CURRENT_REGLEMENT_FILE])
         warnings = list(warnings) + load_warnings
@@ -744,9 +775,13 @@ async def upload_current(file: UploadFile = File(...), session_id: str = Form(de
 
 
 @app.post("/api/upload/history-file")
-async def upload_history_file(file: UploadFile = File(...), session_id: str = Form(default=None)):
+async def upload_history_file(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    session_id: str = Form(default=None),
+    clear_history_before: str = Form(default=None),
+):
     fname = file.filename or "history.txt"
-    cleanup_sessions()
     sid, sess = get_or_create_session(session_id)
     content = await file.read()
     rows = parse_lines(decode_uploaded_content(content))
@@ -761,9 +796,14 @@ async def upload_history_file(file: UploadFile = File(...), session_id: str = Fo
             }
         )
 
+    # Clear all existing history batches when starting a fresh batch upload
+    if isinstance(clear_history_before, str) and clear_history_before.lower() in ("true", "1", "yes"):
+        sess["history_batches"] = []
+
     now = time.time()
     uploaded_coverage = merge_history_batch(sess, rows, [fname], now)
-    save_sessions()
+    # Persist to disk in the background so the response returns immediately
+    background_tasks.add_task(save_sessions)
     return JSONResponse(
         {
             "success": True,
