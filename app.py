@@ -187,6 +187,9 @@ def parse_lines(text: str):
         ref2 = parts[1]
         site = parts[4]
         # Le 4e champ contient la date de règlement attendue (format YYYYMMDD).
+        # On ne replie plus sur un autre champ: la couverture affichée doit
+        # refléter strictement cette colonne métier. Si la valeur est invalide,
+        # la ligne reste parsée mais n'influence ni la couverture ni les filtres par date.
         reglement_date = parse_reglement_date(parts[3])
         try:
             amount = float(parts[-1].replace(",", "."))
