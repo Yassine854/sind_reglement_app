@@ -12,20 +12,17 @@ Puis ouvrir **http://localhost:8000**
 
 ## 📋 Utilisation
 
-1. Importez votre **fichier du mois courant** (`REGLEMENT.txt`) puis vos **fichiers historiques** (`.txt`) depuis l'interface.
-2. Les données importées sont conservées côté application pendant **7 jours** (et restent disponibles après refresh pendant cette période).
+1. L'application lit directement la source du mois courant et le dossier historique configurés (chemins `file://...` par défaut).
+2. Les données sont chargées en mémoire au démarrage (ou via le bouton **Actualiser**) pour éviter une relecture à chaque filtre.
 3. Un bandeau en haut affiche la **période couverte** par les fichiers chargés (mois/année + dates exactes).
-4. Si vous réimportez des historiques qui couvrent une période déjà stockée, les données existantes qui se chevauchent sont remplacées par le nouvel import.
-5. Vous pouvez filtrer une période avec les champs **Du / Au** :
+4. Vous pouvez filtrer une période avec les champs **Du / Au** :
    - le filtre s'applique sur l'ensemble des données stockées (mensuel + historiques)
    - la vue par défaut reste basée sur le fichier mensuel chargé
-6. Le dashboard affiche automatiquement :
+5. Le dashboard affiche automatiquement :
    - **Résumé global** : total réglé, nb transactions, CAMs actives
    - **Par type** : Espèces (CESP), Traite (CTRT), Chèque (CCHQR)
    - **Classement des CAMs** : rang, montant, site d'appartenance, répartition par type
    - **Par site** : totaux regroupés par site (SFX, MAH, NAB, SSE, TUN), y compris les lignes sans CAM explicite si le site est présent
-7. L'import manuel d'un fichier `.txt` (endpoint `/upload`) reste disponible si besoin.
-
 ### Variables d'environnement optionnelles
 
 Pour tester l'application sur une autre machine ou avec des fichiers temporaires, vous pouvez surcharger les chemins par défaut :
