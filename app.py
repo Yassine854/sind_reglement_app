@@ -118,11 +118,16 @@ def resolve_source_path(source: str) -> tuple[str, dict]:
                 for seg in path_part.split("/")
                 if seg and seg not in {".", ".."}
             ]
-            resolved = os.path.join(mount_root, *segments)
-            return resolved, {
+            mount_root_abs = os.path.abspath(mount_root)
+            resolved_candidate = os.path.abspath(
+                os.path.normpath(os.path.join(mount_root_abs, *segments))
+            )
+            if os.path.commonpath([mount_root_abs, resolved_candidate]) != mount_root_abs:
+                resolved_candidate = mount_root_abs
+            return resolved_candidate, {
                 "path_strategy": "mounted_fallback",
                 "uri_host": host,
-                "mount_root": mount_root,
+                "mount_root": mount_root_abs,
                 "path_sanitized": True,
             }
         resolved = f"//{host}{path_part}".rstrip("/")

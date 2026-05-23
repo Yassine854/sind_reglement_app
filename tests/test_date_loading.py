@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -194,6 +195,7 @@ class ReglementDateLoadingTests(unittest.TestCase):
         with patch.dict("os.environ", {"FILE_URI_MOUNT_ROOT": "/mnt/reglement"}, clear=False):
             resolved = file_uri_to_fs_path(uri)
         self.assertEqual(resolved, "/mnt/reglement/etc/passwd")
+        self.assertEqual(os.path.commonpath(["/mnt/reglement", resolved]), "/mnt/reglement")
 
     def test_read_text_file_uses_resolved_path_for_file_uri(self):
         uri = "file://172.16.100.34/Users/chokri.jdir/Desktop/TDB_SINDBAD/REGLEMENT.txt"
