@@ -113,9 +113,10 @@ def resolve_source_path(source: str) -> tuple[str, dict]:
             resolved = f"\\\\{host}{path_part.replace('/', '\\')}".rstrip("\\")
             return resolved, {"path_strategy": "windows_unc", "uri_host": host}
         if mount_root:
+            normalized_uri_path = path_part.replace("\\", "/")
             segments = [
                 seg
-                for seg in path_part.split("/")
+                for seg in normalized_uri_path.split("/")
                 if seg and seg not in {".", ".."}
             ]
             mount_root_abs = os.path.abspath(mount_root)
