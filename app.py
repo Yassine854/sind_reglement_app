@@ -6,7 +6,6 @@ import os
 import re
 import time
 from urllib.parse import quote, unquote, urlsplit
-from urllib.request import urlopen  # used for local file:// URIs (localhost/no-host)
 
 from fastapi import FastAPI, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -96,12 +95,17 @@ def file_uri_to_fs_path(uri: str) -> str:
     """Convert a file:// URI to an OS path for directory introspection helpers."""
     parsed = urlsplit(uri)
     path_part = unquote(parsed.path or "")
-    if parsed.netloc:
+    if parsed.netloc and parsed.netloc.lower() not in {"localhost", "127.0.0.1", "::1"}:
         # UNC form from URI host + path.
         if os.name == "nt":
             unc = f"\\\\{parsed.netloc}{path_part.replace('/', '\\')}"
             return unc.rstrip("\\")
         return f"//{parsed.netloc}{path_part}".rstrip("/")
+    if os.name == "nt":
+        windows_path = path_part.replace("/", "\\")
+        if re.match(r"^\\[A-Za-z]:\\", windows_path):
+            return windows_path[1:]
+        return windows_path
     return path_part
 
 
@@ -128,15 +132,12 @@ def parse_reglement_date(value: str | None) -> date | None:
 
 
 def read_text_file(source: str) -> tuple[str | None, str | None]:
+    resolved_source = source
     try:
         if is_file_uri(source):
-            parsed = urlsplit(source)
-            if parsed.netloc and parsed.netloc.lower() not in {"", "localhost", "127.0.0.1", "::1"}:
-                with open(file_uri_to_fs_path(source), "rb") as f:
-                    content = f.read()
-            else:
-                with urlopen(source) as response:
-                    content = response.read()
+            resolved_source = file_uri_to_fs_path(source)
+            with open(resolved_source, "rb") as f:
+                content = f.read()
         else:
             with open(source, "rb") as f:
                 content = f.read()
@@ -145,12 +146,12 @@ def read_text_file(source: str) -> tuple[str | None, str | None]:
         except UnicodeDecodeError:
             return content.decode("latin-1"), None
     except FileNotFoundError:
-        return None, f"Fichier introuvable : {source}"
+        return None, f"Fichier introuvable : {resolved_source}"
     except IsADirectoryError:
-        return None, f"Chemin invalide (dossier) : {source}"
+        return None, f"Chemin invalide (dossier) : {resolved_source}"
     except OSError:
-        return None, f"Impossible de lire le fichier : {source}"
-    return None, f"Impossible de décoder le fichier : {source}"
+        return None, f"Impossible de lire le fichier : {resolved_source}"
+    return None, f"Impossible de décoder le fichier : {resolved_source}"
 
 
 

@@ -8,10 +8,12 @@ from unittest.mock import patch
 import app as app_module
 from app import (
     _cache,
+    file_uri_to_fs_path,
     get_dashboard_for_filter,
     get_dashboard_for_range,
     get_default_dashboard,
     parse_lines,
+    read_text_file,
     reload_cache,
 )
 
@@ -171,6 +173,23 @@ class ReglementDateLoadingTests(unittest.TestCase):
         self.assertEqual(payload["grand_count"], 1)
         self.assertEqual(payload["source_files"], [history_file.as_uri()])
         self.assertTrue(payload["source_files"][0].startswith("file://"))
+
+    def test_file_uri_to_fs_path_decodes_percent_encoded_segments(self):
+        uri = "file://172.16.100.34/Users/chokri.jdir/Desktop/TDB_SINDBAD_Mens/R%C3%A9glements/"
+        resolved = file_uri_to_fs_path(uri)
+        self.assertIn("Réglements", resolved)
+        self.assertNotIn("%C3%A9", resolved)
+
+    def test_read_text_file_uses_resolved_path_for_file_uri(self):
+        uri = "file://172.16.100.34/Users/chokri.jdir/Desktop/TDB_SINDBAD/REGLEMENT.txt"
+        with patch("app.file_uri_to_fs_path", return_value="/tmp/resolved/REGLEMENT.txt") as resolver, patch(
+            "builtins.open", side_effect=FileNotFoundError
+        ) as mocked_open:
+            _, error = read_text_file(uri)
+
+        resolver.assert_called_once_with(uri)
+        mocked_open.assert_called_once_with("/tmp/resolved/REGLEMENT.txt", "rb")
+        self.assertEqual(error, "Fichier introuvable : /tmp/resolved/REGLEMENT.txt")
 
     def test_default_dashboard_returns_warning_when_file_is_missing(self):
         missing = Path("/tmp/does-not-exist/REGLEMENT.txt")
