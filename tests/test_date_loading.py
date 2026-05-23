@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -9,6 +10,7 @@ import app as app_module
 from app import (
     _cache,
     file_uri_to_fs_path,
+    get_source_status,
     get_dashboard_for_filter,
     get_dashboard_for_range,
     get_default_dashboard,
@@ -33,6 +35,7 @@ class ReglementDateLoadingTests(unittest.TestCase):
             "coverage_start": None,
             "coverage_end": None,
             "history_file_count": 0,
+            "source_diagnostics": {},
             "needs_client_loading": False,
         })
 
@@ -180,6 +183,20 @@ class ReglementDateLoadingTests(unittest.TestCase):
         self.assertIn("Réglements", resolved)
         self.assertNotIn("%C3%A9", resolved)
 
+    def test_file_uri_to_fs_path_uses_mount_fallback_when_configured(self):
+        uri = "file://172.16.100.34/Users/chokri.jdir/Desktop/TDB_SINDBAD/REGLEMENT.txt"
+        with patch.dict("os.environ", {"FILE_URI_MOUNT_ROOT": "/mnt/reglement"}, clear=False):
+            resolved = file_uri_to_fs_path(uri)
+        self.assertTrue(resolved.endswith("/Users/chokri.jdir/Desktop/TDB_SINDBAD/REGLEMENT.txt"))
+        self.assertTrue(resolved.startswith("/mnt/reglement"))
+
+    def test_file_uri_mount_fallback_sanitizes_parent_segments(self):
+        uri = "file://172.16.100.34/../../etc/passwd"
+        with patch.dict("os.environ", {"FILE_URI_MOUNT_ROOT": "/mnt/reglement"}, clear=False):
+            resolved = file_uri_to_fs_path(uri)
+        self.assertEqual(resolved, "/mnt/reglement/etc/passwd")
+        self.assertEqual(os.path.commonpath(["/mnt/reglement", resolved]), "/mnt/reglement")
+
     def test_read_text_file_uses_resolved_path_for_file_uri(self):
         uri = "file://172.16.100.34/Users/chokri.jdir/Desktop/TDB_SINDBAD/REGLEMENT.txt"
         with patch("app.file_uri_to_fs_path", return_value="/tmp/resolved/REGLEMENT.txt") as resolver, patch(
@@ -189,7 +206,8 @@ class ReglementDateLoadingTests(unittest.TestCase):
 
         resolver.assert_called_once_with(uri)
         mocked_open.assert_called_once_with("/tmp/resolved/REGLEMENT.txt", "rb")
-        self.assertEqual(error, "Fichier introuvable : /tmp/resolved/REGLEMENT.txt")
+        self.assertIn("Fichier introuvable : /tmp/resolved/REGLEMENT.txt", error)
+        self.assertIn("source:", error)
 
     def test_default_dashboard_returns_warning_when_file_is_missing(self):
         missing = Path("/tmp/does-not-exist/REGLEMENT.txt")
@@ -200,6 +218,23 @@ class ReglementDateLoadingTests(unittest.TestCase):
         self.assertEqual(payload["grand_count"], 0)
         self.assertTrue(payload["warnings"])
         self.assertIn("Fichier introuvable", payload["warnings"][0])
+        self.assertIn("runtime:", payload["warnings"][0])
+
+    def test_source_status_exposes_runtime_and_path_diagnostics(self):
+        missing_file = "/tmp/does-not-exist/REGLEMENT.txt"
+        missing_history = "file://172.16.100.34/Users/chokri.jdir/Desktop/TDB_SINDBAD_Mens/R%C3%A9glements/"
+        with patch("app.DEFAULT_CURRENT_REGLEMENT_FILE", missing_file), patch(
+            "app.DEFAULT_HISTORY_REGLEMENTS_DIR", missing_history
+        ), patch.dict("os.environ", {"FILE_URI_MOUNT_ROOT": "/mnt/reglement"}, clear=False):
+            app_module.reload_cache()
+            status = get_source_status()
+
+        self.assertIn("runtime_label", status)
+        self.assertEqual(status["current_diagnostic"]["configured_source"], missing_file)
+        self.assertEqual(status["current_diagnostic"]["error_kind"], "missing")
+        self.assertEqual(status["history_diagnostic"]["configured_source"], missing_history)
+        self.assertTrue(status["history_diagnostic"]["resolved_path"].startswith("/mnt/reglement"))
+        self.assertEqual(status["history_diagnostic"]["error_kind"], "missing")
 
     def test_filter_endpoint_alias_works_with_start_and_end(self):
         with tempfile.TemporaryDirectory() as tmpdir:

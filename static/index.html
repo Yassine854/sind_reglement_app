@@ -665,6 +665,50 @@ function updateSourcePanel(status) {
 
   items.push({ label: 'Source mensuelle', value: status.current_source_label || '—' });
   items.push({ label: 'Dossier historique', value: status.history_source_label || '—' });
+  items.push({ label: 'Runtime backend', value: status.runtime_label || '—' });
+
+  const currentDiag = status.current_diagnostic || {};
+  const historyDiag = status.history_diagnostic || {};
+
+  function diagSummary(diag, isDir) {
+    if (!diag || !diag.configured_source) return 'Non configuré';
+    if (diag.error_kind === 'access_denied') return 'Accès refusé';
+    if (diag.error_kind === 'missing') return isDir ? 'Dossier introuvable' : 'Fichier introuvable';
+    if (diag.error_kind === 'not_directory') return 'Chemin configuré non dossier';
+    if (diag.error_kind === 'is_directory') return 'Chemin configuré est un dossier';
+    if (diag.error_kind === 'not_file') return 'Chemin configuré non fichier';
+    if (diag.error_kind === 'os_error') return 'Erreur système';
+    return 'Accessible';
+  }
+
+  items.push({
+    label: 'URI mensuelle configurée',
+    value: currentDiag.configured_source || '—',
+  });
+  items.push({
+    label: 'Chemin mensuel résolu',
+    value: currentDiag.resolved_path || '—',
+  });
+  items.push({
+    label: 'État source mensuelle',
+    value: diagSummary(currentDiag, false),
+  });
+  items.push({
+    label: 'URI historique configurée',
+    value: historyDiag.configured_source || '—',
+  });
+  items.push({
+    label: 'Chemin historique résolu',
+    value: historyDiag.resolved_path || '—',
+  });
+  items.push({
+    label: 'État dossier historique',
+    value: diagSummary(historyDiag, true),
+  });
+  items.push({
+    label: 'Dossier historique existe',
+    value: historyDiag.directory_exists ? 'Oui' : 'Non',
+  });
 
   if (status.coverage_start && status.coverage_end) {
     items.push({
