@@ -94,7 +94,7 @@ def is_file_uri(source: str) -> bool:
 
 
 def get_file_uri_mount_root() -> str | None:
-    mount_root = (os.environ.get("FILE_URI_MOUNT_ROOT") or "").strip()
+    mount_root = os.environ.get("FILE_URI_MOUNT_ROOT", "").strip()
     return mount_root or None
 
 
@@ -156,6 +156,7 @@ def inspect_source_path(source: str, *, expect_directory: bool) -> dict:
         "readable": False,
         "directory_exists": False,
         "error_kind": None,
+        "os_error_detail": None,
     }
 
     if not source:
@@ -173,8 +174,9 @@ def inspect_source_path(source: str, *, expect_directory: bool) -> dict:
         diagnostic["directory_exists"] = diagnostic["is_directory"]
         if diagnostic["exists"]:
             diagnostic["readable"] = os.access(resolved_source, os.R_OK)
-    except OSError:
+    except OSError as exc:
         diagnostic["error_kind"] = "os_error"
+        diagnostic["os_error_detail"] = str(exc)
         return diagnostic
 
     if not diagnostic["exists"]:
