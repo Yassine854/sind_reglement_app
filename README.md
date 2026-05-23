@@ -12,7 +12,7 @@ Puis ouvrir **http://localhost:8000**
 
 ## 📋 Utilisation
 
-1. L'application lit directement la source du mois courant et le dossier historique configurés (chemins `file://...` par défaut).
+1. L'application lit uniquement côté backend la source du mois courant et le dossier historique configurés (chemins `file://...` par défaut).
 2. Les données sont chargées en mémoire au démarrage (ou via le bouton **Actualiser**) pour éviter une relecture à chaque filtre.
 3. Un bandeau en haut affiche la **période couverte** par les fichiers chargés (mois/année + dates exactes).
 4. Vous pouvez filtrer une période avec les champs **Du / Au** :
@@ -27,8 +27,9 @@ Puis ouvrir **http://localhost:8000**
 
 Pour tester l'application sur une autre machine ou avec des fichiers temporaires, vous pouvez surcharger les chemins par défaut :
 
-- `REGLEMENT_CURRENT_FILE`
-- `REGLEMENT_HISTORY_DIR`
+- `CURRENT_REGLEMENT_FILE`
+- `HISTORY_REGLEMENTS_DIR`
+- `FILE_URI_MOUNT_ROOT` (optionnel sur Linux/macOS pour mapper `file://serveur/...` vers un point de montage local)
 
 ## 🗺️ Sites et CAMs
 

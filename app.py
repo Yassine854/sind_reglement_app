@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import re
+import sys
 import time
 from urllib.parse import quote, unquote, urlsplit
 
@@ -47,6 +48,7 @@ _cache: dict = {
     "coverage_start": None,   # ISO date string of earliest row date
     "coverage_end": None,     # ISO date string of latest row date
     "history_file_count": 0,
+    "source_diagnostics": {},
 }
 
 CAM_SITE_MAP: dict[str, str] = {
@@ -91,22 +93,107 @@ def is_file_uri(source: str) -> bool:
     return bool(source and source.startswith("file://"))
 
 
-def file_uri_to_fs_path(uri: str) -> str:
-    """Convert a file:// URI to an OS path for directory introspection helpers."""
-    parsed = urlsplit(uri)
+def get_file_uri_mount_root() -> str | None:
+    mount_root = (os.environ.get("FILE_URI_MOUNT_ROOT") or "").strip()
+    return mount_root or None
+
+
+def resolve_source_path(source: str) -> tuple[str, dict]:
+    if not is_file_uri(source):
+        return source, {"path_strategy": "raw_path"}
+
+    parsed = urlsplit(source)
     path_part = unquote(parsed.path or "")
-    if parsed.netloc and parsed.netloc.lower() not in {"localhost", "127.0.0.1", "::1"}:
-        # UNC form from URI host + path.
+    host = parsed.netloc
+    is_remote = bool(host and host.lower() not in {"localhost", "127.0.0.1", "::1"})
+    mount_root = get_file_uri_mount_root()
+
+    if is_remote:
         if os.name == "nt":
-            unc = f"\\\\{parsed.netloc}{path_part.replace('/', '\\')}"
-            return unc.rstrip("\\")
-        return f"//{parsed.netloc}{path_part}".rstrip("/")
+            resolved = f"\\\\{host}{path_part.replace('/', '\\')}".rstrip("\\")
+            return resolved, {"path_strategy": "windows_unc", "uri_host": host}
+        if mount_root:
+            segments = [seg for seg in path_part.split("/") if seg]
+            resolved = os.path.join(mount_root, *segments)
+            return resolved, {
+                "path_strategy": "mounted_fallback",
+                "uri_host": host,
+                "mount_root": mount_root,
+            }
+        resolved = f"//{host}{path_part}".rstrip("/")
+        return resolved, {
+            "path_strategy": "posix_unc_like",
+            "uri_host": host,
+            "mount_root": None,
+        }
+
     if os.name == "nt":
         windows_path = path_part.replace("/", "\\")
         if re.match(r"^\\[A-Za-z]:\\", windows_path):
-            return windows_path[1:]
-        return windows_path
-    return path_part
+            windows_path = windows_path[1:]
+        return windows_path, {"path_strategy": "windows_local_file_uri"}
+
+    return path_part, {"path_strategy": "posix_local_file_uri"}
+
+
+def file_uri_to_fs_path(uri: str) -> str:
+    """Convert a file:// URI to an OS path for directory introspection helpers."""
+    resolved, _ = resolve_source_path(uri)
+    return resolved
+
+
+def inspect_source_path(source: str, *, expect_directory: bool) -> dict:
+    diagnostic = {
+        "configured_source": source or "",
+        "resolved_path": None,
+        "runtime_os": os.name,
+        "runtime_platform": sys.platform,
+        "path_strategy": None,
+        "mount_root": get_file_uri_mount_root(),
+        "exists": False,
+        "is_directory": False,
+        "is_file": False,
+        "readable": False,
+        "directory_exists": False,
+        "error_kind": None,
+    }
+
+    if not source:
+        diagnostic["error_kind"] = "not_configured"
+        return diagnostic
+
+    resolved_source, resolution_meta = resolve_source_path(source)
+    diagnostic.update(resolution_meta)
+    diagnostic["resolved_path"] = resolved_source
+
+    try:
+        diagnostic["exists"] = os.path.exists(resolved_source)
+        diagnostic["is_directory"] = os.path.isdir(resolved_source)
+        diagnostic["is_file"] = os.path.isfile(resolved_source)
+        diagnostic["directory_exists"] = diagnostic["is_directory"]
+        if diagnostic["exists"]:
+            diagnostic["readable"] = os.access(resolved_source, os.R_OK)
+    except OSError:
+        diagnostic["error_kind"] = "os_error"
+        return diagnostic
+
+    if not diagnostic["exists"]:
+        diagnostic["error_kind"] = "missing"
+        return diagnostic
+    if not diagnostic["readable"]:
+        diagnostic["error_kind"] = "access_denied"
+        return diagnostic
+    if expect_directory and not diagnostic["is_directory"]:
+        diagnostic["error_kind"] = "not_directory"
+        return diagnostic
+    if not expect_directory and diagnostic["is_directory"]:
+        diagnostic["error_kind"] = "is_directory"
+        return diagnostic
+    if not expect_directory and not diagnostic["is_file"]:
+        diagnostic["error_kind"] = "not_file"
+        return diagnostic
+
+    return diagnostic
 
 
 def get_source_label(source: str) -> str:
@@ -146,12 +233,34 @@ def read_text_file(source: str) -> tuple[str | None, str | None]:
         except UnicodeDecodeError:
             return content.decode("latin-1"), None
     except FileNotFoundError:
-        return None, f"Fichier introuvable : {resolved_source}"
+        return (
+            None,
+            f"Fichier introuvable : {resolved_source} "
+            f"(source: {source}, runtime: {os.name}/{sys.platform})",
+        )
+    except PermissionError:
+        return (
+            None,
+            f"Accès refusé : {resolved_source} "
+            f"(source: {source}, runtime: {os.name}/{sys.platform})",
+        )
     except IsADirectoryError:
-        return None, f"Chemin invalide (dossier) : {resolved_source}"
-    except OSError:
-        return None, f"Impossible de lire le fichier : {resolved_source}"
-    return None, f"Impossible de décoder le fichier : {resolved_source}"
+        return (
+            None,
+            f"Chemin invalide (dossier) : {resolved_source} "
+            f"(source: {source}, runtime: {os.name}/{sys.platform})",
+        )
+    except OSError as exc:
+        return (
+            None,
+            f"Impossible de lire le fichier : {resolved_source} "
+            f"(source: {source}, runtime: {os.name}/{sys.platform}, erreur: {exc.__class__.__name__})",
+        )
+    return (
+        None,
+        f"Impossible de décoder le fichier : {resolved_source} "
+        f"(source: {source}, runtime: {os.name}/{sys.platform})",
+    )
 
 
 
@@ -159,17 +268,31 @@ def list_reglement_files(directory: str) -> tuple[list[str], list[str]]:
     lookup_dir = file_uri_to_fs_path(directory) if is_file_uri(directory) else directory
 
     if not os.path.exists(lookup_dir):
-        return [], [f"Dossier introuvable : {directory}"]
+        return [], [
+            f"Dossier introuvable : {lookup_dir} "
+            f"(source: {directory}, runtime: {os.name}/{sys.platform})"
+        ]
     if not os.path.isdir(lookup_dir):
-        return [], [f"Chemin invalide (pas un dossier) : {directory}"]
+        return [], [
+            f"Chemin invalide (pas un dossier) : {lookup_dir} "
+            f"(source: {directory}, runtime: {os.name}/{sys.platform})"
+        ]
 
     try:
         filenames = sorted(
             [filename for filename in os.listdir(lookup_dir) if filename.lower().endswith(".txt")],
             key=lambda filename: filename.lower(),
         )
-    except OSError:
-        return [], [f"Impossible de lire le dossier : {directory}"]
+    except PermissionError:
+        return [], [
+            f"Accès refusé au dossier : {lookup_dir} "
+            f"(source: {directory}, runtime: {os.name}/{sys.platform})"
+        ]
+    except OSError as exc:
+        return [], [
+            f"Impossible de lire le dossier : {lookup_dir} "
+            f"(source: {directory}, runtime: {os.name}/{sys.platform}, erreur: {exc.__class__.__name__})"
+        ]
     if is_file_uri(directory):
         base_uri = directory if directory.endswith("/") else f"{directory}/"
         return [f"{base_uri}{quote(filename)}" for filename in filenames], []
@@ -320,6 +443,8 @@ def reload_cache() -> None:
     history_dir = history_uri or ""
 
     warnings: list[str] = []
+    current_diagnostic = inspect_source_path(current_path, expect_directory=False)
+    history_diagnostic = inspect_source_path(history_dir, expect_directory=True)
 
     if not current_path and not history_dir:
         warnings.append(
@@ -337,6 +462,10 @@ def reload_cache() -> None:
             "coverage_start": None,
             "coverage_end": None,
             "history_file_count": 0,
+            "source_diagnostics": {
+                "current": current_diagnostic,
+                "history": history_diagnostic,
+            },
         })
         return
 
@@ -375,6 +504,10 @@ def reload_cache() -> None:
         "coverage_start": date_to_iso(coverage_start),
         "coverage_end": date_to_iso(coverage_end),
         "history_file_count": len(history_files),
+        "source_diagnostics": {
+            "current": current_diagnostic,
+            "history": history_diagnostic,
+        },
     })
 
 
@@ -408,6 +541,9 @@ def get_source_status() -> dict:
             if DEFAULT_HISTORY_REGLEMENTS_DIR
             else "—"
         ),
+        "runtime_label": f"{os.name}/{sys.platform}",
+        "current_diagnostic": cache.get("source_diagnostics", {}).get("current", {}),
+        "history_diagnostic": cache.get("source_diagnostics", {}).get("history", {}),
     }
 
 
