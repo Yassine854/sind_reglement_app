@@ -85,6 +85,25 @@ class ReglementDateLoadingTests(unittest.TestCase):
         self.assertEqual(payload["source_files"], [str(current_file)])
         self.assertEqual(payload["warnings"], [])
 
+    def test_default_dashboard_reads_current_file_uri_without_stripping_prefix(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            current_file = Path(tmpdir) / "REGLEMENT mai.txt"
+            current_file.write_text(
+                "CESP-26-05-0000100;26-99-CAM39-00415;20260501;20260501;BJSSE;ESP;CLS03581;;;FAC-BJS-26-00414;71.9\n",
+                encoding="utf-8",
+            )
+            current_uri = current_file.as_uri()
+
+            with patch("app.DEFAULT_CURRENT_REGLEMENT_FILE", current_uri), patch(
+                "app.DEFAULT_HISTORY_REGLEMENTS_DIR", ""
+            ):
+                response = asyncio.run(get_default_dashboard())
+
+        payload = json.loads(response.body)
+        self.assertEqual(payload["grand_count"], 1)
+        self.assertEqual(payload["source_files"], [current_uri])
+        self.assertTrue(payload["source_files"][0].startswith("file://"))
+
     def test_date_range_merges_history_and_current_sources(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             base = Path(tmpdir)
@@ -128,6 +147,29 @@ class ReglementDateLoadingTests(unittest.TestCase):
         self.assertAlmostEqual(payload["grand_total"], 676.89, places=3)
         self.assertEqual(payload["date_range"], {"start": "2026-04-25", "end": "2026-05-25"})
         self.assertEqual(len(payload["source_files"]), 3)
+
+    def test_history_directory_listing_preserves_file_uri_sources(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            history_dir = Path(tmpdir) / "Réglements"
+            history_dir.mkdir()
+            history_file = history_dir / "REGLEMENT au 30 avril2026.txt"
+            history_file.write_text(
+                "CTRT-26-04-0000001;26-99-CAM50-00159;20260430;20260524;NAB;TRT;CLS06386;;ATB;ACF-NAB-26-00001;100.0\n",
+                encoding="utf-8",
+            )
+            history_uri = history_dir.as_uri()
+
+            with patch("app.DEFAULT_CURRENT_REGLEMENT_FILE", ""), patch(
+                "app.DEFAULT_HISTORY_REGLEMENTS_DIR", history_uri
+            ):
+                response = asyncio.run(
+                    get_dashboard_for_range(start_date="2026-04-01", end_date="2026-05-31")
+                )
+
+        payload = json.loads(response.body)
+        self.assertEqual(payload["grand_count"], 1)
+        self.assertEqual(payload["source_files"], [history_file.as_uri()])
+        self.assertTrue(payload["source_files"][0].startswith("file://"))
 
     def test_default_dashboard_returns_warning_when_file_is_missing(self):
         missing = Path("/tmp/does-not-exist/REGLEMENT.txt")

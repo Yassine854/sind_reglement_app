@@ -4,7 +4,8 @@ import json
 import os
 import re
 import time
-from urllib.parse import unquote
+from urllib.parse import quote, unquote, urlsplit
+from urllib.request import urlopen
 
 from fastapi import FastAPI, Query
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -85,20 +86,31 @@ def normalize_site(site: str | None) -> str:
     return site if site in VALID_SITES else "Inconnu"
 
 
-def uri_to_fs_path(uri: str) -> str:
-    """Convert a file:// URI (with optional percent-encoding) to an OS filesystem path.
+def is_file_uri(source: str) -> bool:
+    return bool(source and source.startswith("file://"))
 
-    Plain filesystem paths are returned unchanged so that test patches using
-    local paths continue to work without modification.
-    """
-    if not uri or not uri.startswith("file://"):
-        return uri
-    # Strip "file://" and URL-decode percent-encoded characters (e.g. %C3%A9 → é)
-    rest = unquote(uri[7:])
-    # Build a UNC path: //host/path on POSIX, \\host\path on Windows
-    if os.name == "nt":
-        return ("\\\\" + rest.replace("/", "\\")).rstrip("\\")
-    return ("//" + rest).rstrip("/")
+
+def file_uri_to_fs_path(uri: str) -> str:
+    """Convert a file:// URI to an OS path for directory introspection helpers."""
+    parsed = urlsplit(uri)
+    path_part = unquote(parsed.path or "")
+    if parsed.netloc:
+        # UNC form from URI host + path.
+        if os.name == "nt":
+            unc = f"\\\\{parsed.netloc}{path_part.replace('/', '\\')}"
+            return unc.rstrip("\\")
+        return f"//{parsed.netloc}{path_part}".rstrip("/")
+    return path_part
+
+
+def get_source_label(source: str) -> str:
+    if not source:
+        return "—"
+    if not is_file_uri(source):
+        return os.path.basename(source)
+    parsed = urlsplit(source)
+    name = os.path.basename(unquote(parsed.path.rstrip("/")))
+    return name or parsed.netloc or source
 
 def parse_reglement_date(value: str | None) -> date | None:
     if value is None:
@@ -113,42 +125,52 @@ def parse_reglement_date(value: str | None) -> date | None:
 
 
 
-def read_text_file(path: str) -> tuple[str | None, str | None]:
+def read_text_file(source: str) -> tuple[str | None, str | None]:
     try:
-        with open(path, "rb") as f:
-            content = f.read()
+        if is_file_uri(source):
+            parsed = urlsplit(source)
+            if parsed.netloc and parsed.netloc.lower() not in {"", "localhost", "127.0.0.1", "::1"}:
+                with open(file_uri_to_fs_path(source), "rb") as f:
+                    content = f.read()
+            else:
+                with urlopen(source) as response:
+                    content = response.read()
+        else:
+            with open(source, "rb") as f:
+                content = f.read()
         try:
             return content.decode("utf-8"), None
         except UnicodeDecodeError:
             return content.decode("latin-1"), None
     except FileNotFoundError:
-        return None, f"Fichier introuvable : {path}"
+        return None, f"Fichier introuvable : {source}"
     except IsADirectoryError:
-        return None, f"Chemin invalide (dossier) : {path}"
+        return None, f"Chemin invalide (dossier) : {source}"
     except OSError:
-        return None, f"Impossible de lire le fichier : {path}"
-    return None, f"Impossible de décoder le fichier : {path}"
+        return None, f"Impossible de lire le fichier : {source}"
+    return None, f"Impossible de décoder le fichier : {source}"
 
 
 
 def list_reglement_files(directory: str) -> tuple[list[str], list[str]]:
-    if not os.path.exists(directory):
+    lookup_dir = file_uri_to_fs_path(directory) if is_file_uri(directory) else directory
+
+    if not os.path.exists(lookup_dir):
         return [], [f"Dossier introuvable : {directory}"]
-    if not os.path.isdir(directory):
+    if not os.path.isdir(lookup_dir):
         return [], [f"Chemin invalide (pas un dossier) : {directory}"]
 
     try:
-        files = sorted(
-            [
-                os.path.join(directory, filename)
-                for filename in os.listdir(directory)
-                if filename.lower().endswith(".txt")
-            ],
-            key=lambda path: path.lower(),
+        filenames = sorted(
+            [filename for filename in os.listdir(lookup_dir) if filename.lower().endswith(".txt")],
+            key=lambda filename: filename.lower(),
         )
     except OSError:
         return [], [f"Impossible de lire le dossier : {directory}"]
-    return files, []
+    if is_file_uri(directory):
+        base_uri = directory if directory.endswith("/") else f"{directory}/"
+        return [f"{base_uri}{quote(filename)}" for filename in filenames], []
+    return [os.path.join(directory, filename) for filename in filenames], []
 
 
 
@@ -279,15 +301,14 @@ def reload_cache() -> None:
     """Read all règlement files from the configured source paths and populate
     the in-memory cache.  Existing cached data is replaced atomically.
 
-    This function resolves file:// URIs (with optional percent-encoding) to
-    OS filesystem paths so that network shares on the local network can be
-    accessed directly without any upload step.
+    Sources are read directly from configured paths/URIs with in-memory caching
+    so filtering actions do not trigger source re-reads.
     """
     current_uri = DEFAULT_CURRENT_REGLEMENT_FILE
     history_uri = DEFAULT_HISTORY_REGLEMENTS_DIR
 
-    current_path = uri_to_fs_path(current_uri) if current_uri else ""
-    history_dir = uri_to_fs_path(history_uri) if history_uri else ""
+    current_path = current_uri or ""
+    history_dir = history_uri or ""
 
     warnings: list[str] = []
 
@@ -369,12 +390,12 @@ def get_source_status() -> dict:
         "has_data": bool(cache["all_rows"]),
         "warnings": cache["warnings"],
         "current_source_label": (
-            os.path.basename(uri_to_fs_path(DEFAULT_CURRENT_REGLEMENT_FILE))
+            get_source_label(DEFAULT_CURRENT_REGLEMENT_FILE)
             if DEFAULT_CURRENT_REGLEMENT_FILE
             else "—"
         ),
         "history_source_label": (
-            os.path.basename(os.path.normpath(uri_to_fs_path(DEFAULT_HISTORY_REGLEMENTS_DIR)))
+            get_source_label(DEFAULT_HISTORY_REGLEMENTS_DIR)
             if DEFAULT_HISTORY_REGLEMENTS_DIR
             else "—"
         ),
@@ -534,8 +555,8 @@ async def get_default_dashboard():
         )
 
     cache = get_or_reload_cache()
-    current_path = uri_to_fs_path(DEFAULT_CURRENT_REGLEMENT_FILE)
-    label = f"Mois en cours · {os.path.basename(current_path)}"
+    current_source = DEFAULT_CURRENT_REGLEMENT_FILE
+    label = f"Mois en cours · {get_source_label(current_source)}"
 
     return JSONResponse(
         build_upload_payload(
@@ -614,4 +635,3 @@ async def refresh_data():
     """Force a reload of all règlement data from the configured source paths."""
     reload_cache()
     return JSONResponse(get_source_status())
-
