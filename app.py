@@ -6,7 +6,7 @@ import os
 import re
 import time
 from urllib.parse import quote, unquote, urlsplit
-from urllib.request import urlopen  # used for local file:// URIs (localhost/no-host)
+from urllib.request import urlopen
 
 from fastapi import FastAPI, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse
