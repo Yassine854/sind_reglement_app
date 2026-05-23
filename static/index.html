@@ -701,13 +701,142 @@ async function loadSourceStatus() {
   }
 }
 
+// ── Client-side source loading (browser fetches file:// URIs directly) ────────
+
+/**
+ * Parse an HTML directory listing page returned by the browser for a
+ * file:// directory URI and return absolute file:// URIs for .txt files.
+ */
+function parseDirListing(html, baseUri) {
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(html, 'text/html');
+  const base = baseUri.endsWith('/') ? baseUri : baseUri + '/';
+  const links = [];
+  doc.querySelectorAll('a[href]').forEach(a => {
+    const href = a.getAttribute('href');
+    if (!href || href.startsWith('?') || href === '../' || href === './') return;
+    if (!href.toLowerCase().endsWith('.txt')) return;
+    try {
+      links.push(new URL(href, base).toString());
+    } catch (_) {
+      // Skip unparseable hrefs.
+    }
+  });
+  return links;
+}
+
+/**
+ * Attempt to fetch a single URI via the browser's network stack.
+ * Returns { uri, content } on success, or null on failure.
+ */
+async function browserFetch(uri) {
+  try {
+    const res = await fetch(uri);
+    if (!res.ok) return null;
+    const text = await res.text();
+    return { uri, content: text };
+  } catch (_) {
+    return null;
+  }
+}
+
+/**
+ * Load règlement sources entirely client-side:
+ *   1. Fetch the current-month file URI.
+ *   2. Fetch the history directory listing and then each .txt file therein.
+ *   3. POST the collected content to /api/ingest.
+ *
+ * Updates the source-status panel throughout and returns the final status object.
+ */
+async function runClientSideLoad() {
+  // Show in-progress state.
+  syncDot.className = 'sync-dot warn';
+  syncLabel.textContent = 'Chargement depuis le réseau local…';
+  sourceInfoGrid.innerHTML = '';
+
+  let sourcesConfig;
+  try {
+    const res = await fetch('/api/sources');
+    sourcesConfig = await res.json();
+  } catch (e) {
+    syncDot.className = 'sync-dot offline';
+    syncLabel.textContent = 'Impossible de contacter le serveur';
+    return null;
+  }
+
+  const payload = { current: null, history: [] };
+  const fetchErrors = [];
+
+  // ── Current-month file ───────────────────────────────────────────────────
+  if (sourcesConfig.current_uri) {
+    const result = await browserFetch(sourcesConfig.current_uri);
+    if (result) {
+      payload.current = result;
+    } else {
+      fetchErrors.push(
+        'Impossible de charger la source mensuelle : ' + sourcesConfig.current_uri
+      );
+    }
+  }
+
+  // ── History directory ────────────────────────────────────────────────────
+  if (sourcesConfig.history_uri) {
+    const dirResult = await browserFetch(sourcesConfig.history_uri);
+    if (dirResult) {
+      // The browser returns an HTML directory listing for a directory URI.
+      const fileUris = parseDirListing(dirResult.content, sourcesConfig.history_uri);
+      for (const fileUri of fileUris) {
+        const fileResult = await browserFetch(fileUri);
+        if (fileResult) {
+          payload.history.push(fileResult);
+        } else {
+          fetchErrors.push('Impossible de charger : ' + fileUri);
+        }
+      }
+    } else {
+      fetchErrors.push(
+        "Impossible de lister le dossier historique : " + sourcesConfig.history_uri
+      );
+    }
+  }
+
+  // ── POST to /api/ingest ──────────────────────────────────────────────────
+  try {
+    const ingestRes = await fetch('/api/ingest', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const status = await ingestRes.json();
+    if (fetchErrors.length) {
+      // Merge fetch-side errors into the status warnings for display.
+      status.warnings = (status.warnings || []).concat(fetchErrors);
+    }
+    updateSourcePanel(status);
+    return status;
+  } catch (e) {
+    syncDot.className = 'sync-dot offline';
+    syncLabel.textContent = "Erreur lors de l'envoi des données au serveur";
+    if (fetchErrors.length) showWarning(fetchErrors);
+    return null;
+  }
+}
+
 async function refreshData() {
   const btn = document.getElementById('refresh-btn');
   if (btn) btn.classList.add('spinning');
   try {
+    // Ask the server to reset its cache first.
     const res = await fetch('/api/refresh', { method: 'POST' });
     const status = await res.json();
-    updateSourcePanel(status);
+
+    if (status.needs_client_loading) {
+      // Remote file:// sources — reload via browser.
+      await runClientSideLoad();
+    } else {
+      updateSourcePanel(status);
+    }
+
     // Reload the current view after data refresh.
     if (startDateInput.value && endDateInput.value) {
       await applyDateFilter();
@@ -912,8 +1041,16 @@ function switchTab(name) {
 }
 
 // ── Page load ─────────────────────────────────────────────────────────────────
-loadSourceStatus();
-loadDefaultData();
+async function init() {
+  const status = await loadSourceStatus();
+  if (status && status.needs_client_loading) {
+    // Remote file:// sources — the browser must fetch the content.
+    await runClientSideLoad();
+  }
+  await loadDefaultData();
+}
+
+init();
 </script>
 </body>
 </html>

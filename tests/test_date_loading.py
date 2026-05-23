@@ -31,6 +31,7 @@ class ReglementDateLoadingTests(unittest.TestCase):
             "coverage_start": None,
             "coverage_end": None,
             "history_file_count": 0,
+            "needs_client_loading": False,
         })
 
     def test_parse_lines_uses_reglement_date_column(self):

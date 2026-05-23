@@ -1,17 +1,19 @@
 from collections import defaultdict
 from datetime import date, datetime
 import json
+import logging
 import os
 import re
 import time
 from urllib.parse import quote, unquote, urlsplit
 from urllib.request import urlopen
 
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 app = FastAPI()
+logger = logging.getLogger(__name__)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 TYPE_MAP = {
@@ -46,6 +48,7 @@ _cache: dict = {
     "coverage_start": None,   # ISO date string of earliest row date
     "coverage_end": None,     # ISO date string of latest row date
     "history_file_count": 0,
+    "needs_client_loading": False,  # True when remote file:// sources need browser-side fetch
 }
 
 CAM_SITE_MAP: dict[str, str] = {
@@ -88,6 +91,23 @@ def normalize_site(site: str | None) -> str:
 
 def is_file_uri(source: str) -> bool:
     return bool(source and source.startswith("file://"))
+
+
+def _is_remote_file_uri(uri: str) -> bool:
+    """Return True if the URI is a file:// URI with a non-localhost host component.
+
+    Such URIs (e.g. ``file://172.16.100.34/...``) reference network shares that
+    are accessible from the user's browser/OS but cannot be opened by the Python
+    server process using plain filesystem calls.  They must be loaded
+    client-side (from the browser) instead.
+    """
+    if not is_file_uri(uri):
+        return False
+    parsed = urlsplit(uri)
+    return bool(
+        parsed.netloc
+        and parsed.netloc.lower() not in {"", "localhost", "127.0.0.1", "::1"}
+    )
 
 
 def file_uri_to_fs_path(uri: str) -> str:
@@ -303,6 +323,12 @@ def reload_cache() -> None:
 
     Sources are read directly from configured paths/URIs with in-memory caching
     so filtering actions do not trigger source re-reads.
+
+    Remote ``file://`` URIs (e.g. ``file://172.16.100.34/...``) cannot be opened
+    by the server process using plain filesystem calls.  When such a URI is
+    configured the cache is initialised in a *pending client-side load* state
+    (``needs_client_loading=True``) so the browser can fetch the content and
+    deliver it via the ``POST /api/ingest`` endpoint.
     """
     current_uri = DEFAULT_CURRENT_REGLEMENT_FILE
     history_uri = DEFAULT_HISTORY_REGLEMENTS_DIR
@@ -328,11 +354,19 @@ def reload_cache() -> None:
             "coverage_start": None,
             "coverage_end": None,
             "history_file_count": 0,
+            "needs_client_loading": False,
         })
         return
 
+    # Remote file:// URIs must be loaded by the browser, not the server process.
+    # Check each source independently so locally-accessible sources are still
+    # loaded server-side while remote ones are deferred to the browser.
+    current_remote = _is_remote_file_uri(current_path)
+    history_remote = _is_remote_file_uri(history_dir)
+    needs_client = current_remote or history_remote
+
     history_files: list[str] = []
-    if history_dir:
+    if history_dir and not history_remote:
         history_files, dir_warnings = list_reglement_files(history_dir)
         warnings.extend(dir_warnings)
 
@@ -347,7 +381,7 @@ def reload_cache() -> None:
     current_rows: list[dict] = []
     current_sources: list[str] = []
     cur_warnings: list[str] = []
-    if current_path:
+    if current_path and not current_remote:
         current_rows, current_sources, cur_warnings = load_rows_from_paths([current_path])
         warnings.extend(cur_warnings)
 
@@ -361,11 +395,12 @@ def reload_cache() -> None:
         "source_files": all_sources,
         "current_source_files": current_sources,
         "warnings": warnings,
-        "current_warnings": cur_warnings if current_path else [],
+        "current_warnings": cur_warnings if current_path and not current_remote else [],
         "loaded_at": time.time(),
         "coverage_start": date_to_iso(coverage_start),
         "coverage_end": date_to_iso(coverage_end),
         "history_file_count": len(history_files),
+        "needs_client_loading": needs_client,
     })
 
 
@@ -389,6 +424,7 @@ def get_source_status() -> dict:
         "history_file_count": cache["history_file_count"],
         "has_data": bool(cache["all_rows"]),
         "warnings": cache["warnings"],
+        "needs_client_loading": cache.get("needs_client_loading", False),
         "current_source_label": (
             get_source_label(DEFAULT_CURRENT_REGLEMENT_FILE)
             if DEFAULT_CURRENT_REGLEMENT_FILE
@@ -627,6 +663,108 @@ async def get_dashboard_for_filter(
 @app.get("/api/status")
 async def source_status():
     """Return metadata about the loaded data cache for the source status panel."""
+    return JSONResponse(get_source_status())
+
+
+@app.get("/api/sources")
+async def get_configured_sources():
+    """Return the configured source URIs so the browser can load them client-side.
+
+    When ``needs_client_loading`` is True the frontend should fetch the URIs
+    directly (using the browser's own network stack, which supports network-share
+    ``file://`` paths) and POST the results to ``/api/ingest``.
+    """
+    cache = get_or_reload_cache()
+    return JSONResponse({
+        "current_uri": DEFAULT_CURRENT_REGLEMENT_FILE or None,
+        "current_label": (
+            get_source_label(DEFAULT_CURRENT_REGLEMENT_FILE)
+            if DEFAULT_CURRENT_REGLEMENT_FILE else None
+        ),
+        "history_uri": DEFAULT_HISTORY_REGLEMENTS_DIR or None,
+        "history_label": (
+            get_source_label(DEFAULT_HISTORY_REGLEMENTS_DIR)
+            if DEFAULT_HISTORY_REGLEMENTS_DIR else None
+        ),
+        "needs_client_loading": cache.get("needs_client_loading", False),
+    })
+
+
+@app.post("/api/ingest")
+async def ingest_client_data(request: Request):
+    """Accept règlement file content fetched client-side (by the browser) and
+    populate the in-memory cache.
+
+    Expected JSON body::
+
+        {
+          "current": {"uri": "file://...", "content": "<raw text>"},
+          "history": [{"uri": "file://...", "content": "<raw text>"}, ...]
+        }
+
+    Either key may be absent or ``null``.  The cache is updated atomically and
+    the updated source status is returned.
+    """
+    try:
+        body = await request.json()
+    except Exception as exc:
+        logger.warning("Ingest: invalid JSON body: %s", exc)
+        return JSONResponse({"detail": "Corps JSON invalide."}, status_code=400)
+
+    current_data = body.get("current") or {}
+    history_data = body.get("history") or []
+
+    history_rows: list[dict] = []
+    history_sources: list[str] = []
+    ingest_warnings: list[str] = []
+
+    for item in history_data:
+        uri = item.get("uri", "")
+        content = item.get("content", "")
+        if content:
+            parsed = parse_lines(content)
+            if parsed:
+                history_sources.append(uri)
+                history_rows.extend(parsed)
+            else:
+                ingest_warnings.append(
+                    f"Aucune ligne valide dans le fichier historique : {uri}"
+                )
+
+    current_rows: list[dict] = []
+    current_sources: list[str] = []
+
+    if current_data:
+        uri = current_data.get("uri", "")
+        content = current_data.get("content", "")
+        if content:
+            parsed = parse_lines(content)
+            if parsed:
+                current_sources.append(uri)
+                current_rows.extend(parsed)
+            else:
+                ingest_warnings.append(
+                    f"Aucune ligne valide dans le fichier courant : {uri}"
+                )
+
+    all_rows = history_rows + current_rows
+    all_sources = history_sources + current_sources
+    coverage_start, coverage_end = get_rows_bounds(all_rows)
+
+    _cache.update({
+        "all_rows": all_rows,
+        "current_rows": current_rows,
+        "source_files": all_sources,
+        "current_source_files": current_sources,
+        "warnings": ingest_warnings,
+        "current_warnings": ingest_warnings,
+        "loaded_at": time.time(),
+        "coverage_start": date_to_iso(coverage_start),
+        "coverage_end": date_to_iso(coverage_end),
+        "history_file_count": len(history_data),
+        "needs_client_loading": False,
+    })
+
     return JSONResponse(get_source_status())
 
 
