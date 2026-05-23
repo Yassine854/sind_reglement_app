@@ -182,12 +182,18 @@ class ReglementDateLoadingTests(unittest.TestCase):
         self.assertIn("Réglements", resolved)
         self.assertNotIn("%C3%A9", resolved)
 
-    def test_file_uri_to_fs_path_uses_mount_fallback_on_non_windows(self):
+    def test_file_uri_to_fs_path_uses_mount_fallback_when_configured(self):
         uri = "file://172.16.100.34/Users/chokri.jdir/Desktop/TDB_SINDBAD/REGLEMENT.txt"
         with patch.dict("os.environ", {"FILE_URI_MOUNT_ROOT": "/mnt/reglement"}, clear=False):
             resolved = file_uri_to_fs_path(uri)
         self.assertTrue(resolved.endswith("/Users/chokri.jdir/Desktop/TDB_SINDBAD/REGLEMENT.txt"))
         self.assertTrue(resolved.startswith("/mnt/reglement"))
+
+    def test_file_uri_mount_fallback_sanitizes_parent_segments(self):
+        uri = "file://172.16.100.34/../../etc/passwd"
+        with patch.dict("os.environ", {"FILE_URI_MOUNT_ROOT": "/mnt/reglement"}, clear=False):
+            resolved = file_uri_to_fs_path(uri)
+        self.assertEqual(resolved, "/mnt/reglement/etc/passwd")
 
     def test_read_text_file_uses_resolved_path_for_file_uri(self):
         uri = "file://172.16.100.34/Users/chokri.jdir/Desktop/TDB_SINDBAD/REGLEMENT.txt"

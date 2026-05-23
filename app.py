@@ -113,12 +113,17 @@ def resolve_source_path(source: str) -> tuple[str, dict]:
             resolved = f"\\\\{host}{path_part.replace('/', '\\')}".rstrip("\\")
             return resolved, {"path_strategy": "windows_unc", "uri_host": host}
         if mount_root:
-            segments = [seg for seg in path_part.split("/") if seg]
+            segments = [
+                seg
+                for seg in path_part.split("/")
+                if seg and seg not in {".", ".."}
+            ]
             resolved = os.path.join(mount_root, *segments)
             return resolved, {
                 "path_strategy": "mounted_fallback",
                 "uri_host": host,
                 "mount_root": mount_root,
+                "path_sanitized": True,
             }
         resolved = f"//{host}{path_part}".rstrip("/")
         return resolved, {
