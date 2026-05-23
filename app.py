@@ -90,12 +90,23 @@ def uri_to_fs_path(uri: str) -> str:
 
     Plain filesystem paths are returned unchanged so that test patches using
     local paths continue to work without modification.
+
+    Handles two URI forms:
+      file://server/share/path  →  //server/share/path  (POSIX)
+                                   \\\\server\\share\\path  (Windows)
+      file://C:/path            →  C:/path  (POSIX / WSL)
+                                   C:\\path  (Windows)
     """
     if not uri or not uri.startswith("file://"):
         return uri
     # Strip "file://" and URL-decode percent-encoded characters (e.g. %C3%A9 → é)
     rest = unquote(uri[7:])
-    # Build a UNC path: //host/path on POSIX, \\host\path on Windows
+    # Detect a Windows drive letter (e.g. "C:/...") to avoid mis-building a UNC path.
+    if len(rest) >= 2 and rest[1] == ":":
+        if os.name == "nt":
+            return rest.replace("/", "\\")
+        return rest
+    # Build a UNC/network path: //host/path on POSIX, \\host\path on Windows
     if os.name == "nt":
         return ("\\\\" + rest.replace("/", "\\")).rstrip("\\")
     return ("//" + rest).rstrip("/")
