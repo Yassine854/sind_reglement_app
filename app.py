@@ -4,9 +4,9 @@ import json
 import os
 import re
 import time
-import uuid
+from urllib.parse import unquote
 
-from fastapi import BackgroundTasks, FastAPI, File, Form, Query, UploadFile
+from fastapi import FastAPI, Query
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -20,15 +20,32 @@ TYPE_MAP = {
 }
 
 VALID_SITES = {"SFX", "MAH", "NAB", "SSE", "TUN"}
-# Local-dev fallback paths (empty by default for hosted/Render deployment).
-# Set via environment variables; leave blank on Render.
-DEFAULT_CURRENT_REGLEMENT_FILE = os.environ.get("DEFAULT_REGLEMENT_FILE", "")
-DEFAULT_HISTORY_REGLEMENTS_DIR = os.environ.get("DEFAULT_HISTORY_DIR", "")
 
-# ── Session storage (7 days) ──────────────────────────────────────────────────
-SESSION_TTL = 7 * 24 * 60 * 60  # seconds
-SESSION_STORAGE_FILE = os.path.join("data", "uploaded_sessions.json")
-session_store: dict[str, dict] = {}
+# ── Source configuration (internal-network paths) ─────────────────────────────
+# Accepts plain filesystem paths or file:// URIs with optional percent-encoding.
+# Override via environment variables for alternate deployments.
+DEFAULT_CURRENT_REGLEMENT_FILE = os.environ.get(
+    "CURRENT_REGLEMENT_FILE",
+    "file://172.16.100.34/Users/chokri.jdir/Desktop/TDB_SINDBAD/REGLEMENT.txt",
+)
+DEFAULT_HISTORY_REGLEMENTS_DIR = os.environ.get(
+    "HISTORY_REGLEMENTS_DIR",
+    "file://172.16.100.34/Users/chokri.jdir/Desktop/TDB_SINDBAD_Mens/R%C3%A9glements/",
+)
+
+# ── In-memory data cache ──────────────────────────────────────────────────────
+_cache: dict = {
+    "all_rows": [],          # All parsed rows (history + current) for date-range filtering
+    "current_rows": [],      # Rows from the current-month file only (for default view)
+    "source_files": [],      # All loaded source file paths
+    "current_source_files": [],  # Only the current-month source file(s)
+    "warnings": [],          # All warnings (history + current)
+    "current_warnings": [],  # Warnings related to the current-month file only
+    "loaded_at": None,        # Unix timestamp of last successful load
+    "coverage_start": None,   # ISO date string of earliest row date
+    "coverage_end": None,     # ISO date string of latest row date
+    "history_file_count": 0,
+}
 
 CAM_SITE_MAP: dict[str, str] = {
     # SFX
@@ -67,6 +84,21 @@ def normalize_site(site: str | None) -> str:
     site = site.strip().upper()
     return site if site in VALID_SITES else "Inconnu"
 
+
+def uri_to_fs_path(uri: str) -> str:
+    """Convert a file:// URI (with optional percent-encoding) to an OS filesystem path.
+
+    Plain filesystem paths are returned unchanged so that test patches using
+    local paths continue to work without modification.
+    """
+    if not uri or not uri.startswith("file://"):
+        return uri
+    # Strip "file://" and URL-decode percent-encoded characters (e.g. %C3%A9 → é)
+    rest = unquote(uri[7:])
+    # Build a UNC path: //host/path on POSIX, \\host\path on Windows
+    if os.name == "nt":
+        return ("\\\\" + rest.replace("/", "\\")).rstrip("\\")
+    return ("//" + rest).rstrip("/")
 
 def parse_reglement_date(value: str | None) -> date | None:
     if value is None:
@@ -228,35 +260,10 @@ async def index():
         return f.read()
 
 
-# ── Session helpers ───────────────────────────────────────────────────────────
+# ── Helpers ───────────────────────────────────────────────────────────────────
 
 def date_to_iso(value: date | None) -> str | None:
     return value.isoformat() if isinstance(value, date) else None
-
-
-def parse_iso_date_optional(value: str | None) -> date | None:
-    if not value or not isinstance(value, str):
-        return None
-    try:
-        return parse_iso_date(value)
-    except ValueError:
-        return None
-
-
-def serialize_row(row: dict) -> dict:
-    return {
-        **row,
-        "reglement_date": date_to_iso(row.get("reglement_date")),
-    }
-
-
-def deserialize_row(row: dict) -> dict:
-    reglement_date = parse_iso_date_optional(row.get("reglement_date"))
-    return {
-        **row,
-        "reglement_date": reglement_date,
-        "reglement_date_iso": reglement_date.isoformat() if reglement_date else None,
-    }
 
 
 def get_rows_bounds(rows: list[dict]) -> tuple[date | None, date | None]:
@@ -266,238 +273,127 @@ def get_rows_bounds(rows: list[dict]) -> tuple[date | None, date | None]:
     return min(dates), max(dates)
 
 
-def decode_uploaded_content(content: bytes) -> str:
-    """Decode uploaded text using UTF-8 first, then Latin-1 fallback."""
-    try:
-        return content.decode("utf-8")
-    except UnicodeDecodeError:
-        return content.decode("latin-1")
+# ── Cache management ──────────────────────────────────────────────────────────
 
+def reload_cache() -> None:
+    """Read all règlement files from the configured source paths and populate
+    the in-memory cache.  Existing cached data is replaced atomically.
 
-def merge_history_batch(sess: dict, rows: list[dict], filenames: list[str], now: float) -> dict:
-    """Append one uploaded history batch to the session.
-
-    Each uploaded file is stored as an independent batch.  Overlap-based removal
-    is intentionally absent: settlement dates from real-world règlement files can
-    span several months ahead of the transaction date, so a naïve date-range
-    intersection check would silently delete valid batches uploaded earlier in the
-    same session.  Callers that need to start fresh (e.g. a new upload session)
-    must clear ``sess["history_batches"]`` themselves via the
-    ``clear_history_before`` flag before the first call.
-
-    Args:
-        sess: Session dictionary containing current and historical uploaded data.
-        rows: Parsed rows extracted from the uploaded historical file(s).
-        filenames: Source filenames represented by this batch.
-        now: Current unix timestamp used for retention metadata.
-
-    Returns:
-        Dict with "start" and "end" ISO dates for the uploaded coverage range.
+    This function resolves file:// URIs (with optional percent-encoding) to
+    OS filesystem paths so that network shares on the local network can be
+    accessed directly without any upload step.
     """
-    upload_min_date, upload_max_date = get_rows_bounds(rows)
-    upload_min_iso = date_to_iso(upload_min_date)
-    upload_max_iso = date_to_iso(upload_max_date)
+    current_uri = DEFAULT_CURRENT_REGLEMENT_FILE
+    history_uri = DEFAULT_HISTORY_REGLEMENTS_DIR
 
-    history_batches = sess.get("history_batches", [])
-    history_batches.append(
-        {
-            "rows": rows,
-            "filenames": filenames,
-            "uploaded_at": now,
-            "expires_at": now + SESSION_TTL,
-            "min_date": upload_min_iso,
-            "max_date": upload_max_iso,
-        }
-    )
-    sess["history_batches"] = history_batches
-    sess["last_updated_at"] = now
-    return {"start": upload_min_iso, "end": upload_max_iso}
+    current_path = uri_to_fs_path(current_uri) if current_uri else ""
+    history_dir = uri_to_fs_path(history_uri) if history_uri else ""
 
+    warnings: list[str] = []
 
-def get_or_create_session(session_id: str | None) -> tuple[str, dict]:
-    sid = session_id if session_id and isinstance(session_id, str) and session_id.strip() else str(uuid.uuid4())
-    sess = session_store.get(sid)
-    if sess is None:
-        sess = {
+    if not current_path and not history_dir:
+        warnings.append(
+            "Aucun fichier configuré. "
+            "Définissez CURRENT_REGLEMENT_FILE et HISTORY_REGLEMENTS_DIR."
+        )
+        _cache.update({
+            "all_rows": [],
             "current_rows": [],
-            "current_filename": None,
-            "current_uploaded_at": None,
-            "current_expires_at": None,
-            "history_batches": [],
-            "last_updated_at": None,
-        }
-        session_store[sid] = sess
-    return sid, sess
+            "source_files": [],
+            "current_source_files": [],
+            "warnings": warnings,
+            "current_warnings": [],
+            "loaded_at": time.time(),
+            "coverage_start": None,
+            "coverage_end": None,
+            "history_file_count": 0,
+        })
+        return
 
+    history_files: list[str] = []
+    if history_dir:
+        history_files, dir_warnings = list_reglement_files(history_dir)
+        warnings.extend(dir_warnings)
 
-def get_session_rows(sess: dict) -> tuple[list[dict], list[str]]:
+    # Load history rows and current rows separately so the default view can
+    # show only the current-month file while range queries use all data.
     history_rows: list[dict] = []
-    history_filenames: list[str] = []
-    for batch in sess.get("history_batches", []):
-        history_rows.extend(batch.get("rows", []))
-        history_filenames.extend(batch.get("filenames", []))
-    return history_rows, history_filenames
+    history_sources: list[str] = []
+    if history_files:
+        history_rows, history_sources, hist_warnings = load_rows_from_paths(history_files)
+        warnings.extend(hist_warnings)
 
+    current_rows: list[dict] = []
+    current_sources: list[str] = []
+    cur_warnings: list[str] = []
+    if current_path:
+        current_rows, current_sources, cur_warnings = load_rows_from_paths([current_path])
+        warnings.extend(cur_warnings)
 
-def get_session_coverage(sess: dict) -> tuple[date | None, date | None]:
-    """Compute displayed coverage from true min/max règlement dates in parsed rows."""
-    starts: list[date] = []
-    ends: list[date] = []
+    all_rows = history_rows + current_rows
+    all_sources = history_sources + current_sources
+    coverage_start, coverage_end = get_rows_bounds(all_rows)
 
-    current_rows = sess.get("current_rows", [])
-    if current_rows:
-        batch_min, batch_max = get_rows_bounds(current_rows)
-        if batch_min:
-            starts.append(batch_min)
-        if batch_max:
-            ends.append(batch_max)
-
-    for batch in sess.get("history_batches", []):
-        batch_min = parse_iso_date_optional(batch.get("min_date"))
-        batch_max = parse_iso_date_optional(batch.get("max_date"))
-        if batch_min:
-            starts.append(batch_min)
-        if batch_max:
-            ends.append(batch_max)
-
-    if not starts or not ends:
-        return None, None
-    return min(starts), max(ends)
-
-
-def save_sessions() -> None:
-    os.makedirs(os.path.dirname(SESSION_STORAGE_FILE), exist_ok=True)
-    serializable: dict[str, dict] = {}
-    for sid, sess in session_store.items():
-        history_batches: list[dict] = []
-        for batch in sess.get("history_batches", []):
-            history_batches.append(
-                {
-                    "rows": [serialize_row(r) for r in batch.get("rows", [])],
-                    "filenames": batch.get("filenames", []),
-                    "uploaded_at": batch.get("uploaded_at"),
-                    "expires_at": batch.get("expires_at"),
-                    "min_date": batch.get("min_date"),
-                    "max_date": batch.get("max_date"),
-                }
-            )
-        serializable[sid] = {
-            "current_rows": [serialize_row(r) for r in sess.get("current_rows", [])],
-            "current_filename": sess.get("current_filename"),
-            "current_uploaded_at": sess.get("current_uploaded_at"),
-            "current_expires_at": sess.get("current_expires_at"),
-            "history_batches": history_batches,
-            "last_updated_at": sess.get("last_updated_at"),
-        }
-    with open(SESSION_STORAGE_FILE, "w", encoding="utf-8") as f:
-        json.dump(serializable, f)
-
-
-def load_sessions() -> None:
-    if not os.path.exists(SESSION_STORAGE_FILE):
-        return
-    try:
-        with open(SESSION_STORAGE_FILE, "r", encoding="utf-8") as f:
-            raw = json.load(f)
-    except (OSError, json.JSONDecodeError):
-        return
-    for sid, sess in raw.items():
-        history_batches: list[dict] = []
-        for batch in sess.get("history_batches", []):
-            history_batches.append(
-                {
-                    "rows": [deserialize_row(r) for r in batch.get("rows", []) if isinstance(r, dict)],
-                    "filenames": batch.get("filenames", []),
-                    "uploaded_at": batch.get("uploaded_at"),
-                    "expires_at": batch.get("expires_at"),
-                    "min_date": batch.get("min_date"),
-                    "max_date": batch.get("max_date"),
-                }
-            )
-        session_store[sid] = {
-            "current_rows": [deserialize_row(r) for r in sess.get("current_rows", []) if isinstance(r, dict)],
-            "current_filename": sess.get("current_filename"),
-            "current_uploaded_at": sess.get("current_uploaded_at"),
-            "current_expires_at": sess.get("current_expires_at"),
-            "history_batches": history_batches,
-            "last_updated_at": sess.get("last_updated_at"),
-        }
-
-
-def summarize_session(sess: dict) -> dict:
-    now = time.time()
-    history_rows, history_filenames = get_session_rows(sess)
-    coverage_start, coverage_end = get_session_coverage(sess)
-    current_exp = sess.get("current_expires_at")
-    expiries = [
-        exp
-        for exp in [current_exp] + [batch.get("expires_at") for batch in sess.get("history_batches", [])]
-        if isinstance(exp, (int, float))
-    ]
-    expires_at = max(expiries) if expiries else None
-    remaining_seconds = max(0.0, expires_at - now) if expires_at is not None else 0.0
-    return {
-        "valid": True,
-        "has_current": bool(sess.get("current_rows")),
-        "has_history": bool(history_rows),
-        "current_filename": sess.get("current_filename"),
-        "history_filenames": history_filenames,
+    _cache.update({
+        "all_rows": all_rows,
+        "current_rows": current_rows,
+        "source_files": all_sources,
+        "current_source_files": current_sources,
+        "warnings": warnings,
+        "current_warnings": cur_warnings if current_path else [],
+        "loaded_at": time.time(),
         "coverage_start": date_to_iso(coverage_start),
         "coverage_end": date_to_iso(coverage_end),
-        "stored_file_count": (1 if sess.get("current_filename") else 0) + len(history_filenames),
-        "stored_batch_count": (1 if sess.get("current_rows") else 0) + len(sess.get("history_batches", [])),
-        "last_updated_at": sess.get("last_updated_at"),
-        "expires_at": expires_at,
-        "ttl_remaining_minutes": round(remaining_seconds / 60, 1),
-        "ttl_remaining_days": round(remaining_seconds / 86400, 2),
-        "retention_days": 7,
+        "history_file_count": len(history_files),
+    })
+
+
+def get_or_reload_cache() -> dict:
+    """Return the cache, triggering a load from source paths if not yet loaded."""
+    if _cache["loaded_at"] is None:
+        reload_cache()
+    return _cache
+
+
+def get_source_status() -> dict:
+    """Return a status dict describing the current cache state for the UI."""
+    cache = get_or_reload_cache()
+    loaded_at = cache["loaded_at"]
+    return {
+        "loaded": loaded_at is not None,
+        "loaded_at": loaded_at,
+        "coverage_start": cache["coverage_start"],
+        "coverage_end": cache["coverage_end"],
+        "source_file_count": len(cache["source_files"]),
+        "history_file_count": cache["history_file_count"],
+        "has_data": bool(cache["all_rows"]),
+        "warnings": cache["warnings"],
+        "current_source_label": (
+            os.path.basename(uri_to_fs_path(DEFAULT_CURRENT_REGLEMENT_FILE))
+            if DEFAULT_CURRENT_REGLEMENT_FILE
+            else "—"
+        ),
+        "history_source_label": (
+            os.path.basename(os.path.normpath(uri_to_fs_path(DEFAULT_HISTORY_REGLEMENTS_DIR)))
+            if DEFAULT_HISTORY_REGLEMENTS_DIR
+            else "—"
+        ),
     }
 
 
-def cleanup_sessions() -> None:
-    now = time.time()
-    changed = False
-    for sid, sess in list(session_store.items()):
-        current_expires = sess.get("current_expires_at")
-        if current_expires and now > current_expires:
-            sess["current_rows"] = []
-            sess["current_filename"] = None
-            sess["current_uploaded_at"] = None
-            sess["current_expires_at"] = None
-            changed = True
-        batches = sess.get("history_batches", [])
-        filtered_batches = [
-            batch for batch in batches
-            if not batch.get("expires_at") or now <= batch.get("expires_at")
-        ]
-        if len(filtered_batches) != len(batches):
-            sess["history_batches"] = filtered_batches
-            changed = True
-        if not sess.get("current_rows") and not sess.get("history_batches"):
-            del session_store[sid]
-            changed = True
-            continue
-    if changed:
-        save_sessions()
-
-
-def get_session(session_id: str | None) -> dict | None:
-    if not session_id or not isinstance(session_id, str):
-        return None
-    cleanup_sessions()
-    return session_store.get(session_id)
-
+@app.on_event("startup")
+async def startup() -> None:
+    reload_cache()
 
 
 def build_upload_payload(
     rows: list[dict],
     filename: str,
     *,
-    mode: str = "upload",
+    mode: str = "default",
     source_files: list[str] | None = None,
     date_range: dict[str, str] | None = None,
     warnings: list[str] | None = None,
-    storage_status: dict | None = None,
 ) -> dict:
     cam_data: dict[str, dict] = defaultdict(
         lambda: {
@@ -619,56 +515,35 @@ def build_upload_payload(
         "source_files": source_files or [],
         "date_range": date_range,
         "warnings": warnings or [],
-        "storage_status": storage_status,
     }
 
 
-load_sessions()
-
+# ── API endpoints ─────────────────────────────────────────────────────────────
 
 @app.get("/api/default")
-async def get_default_dashboard(session_id: str = None):
-    sess = get_session(session_id)
-    if sess and sess.get("current_rows"):
-        rows = sess["current_rows"]
-        filename = sess["current_filename"] or "REGLEMENT.txt"
-        storage_status = summarize_session(sess)
-        return JSONResponse(
-            build_upload_payload(
-                rows,
-                filename,
-                mode="default",
-                source_files=[filename],
-                storage_status=storage_status,
-            )
-        )
-
-    # No session and no local path configured: show hosted-friendly empty state
+async def get_default_dashboard():
     if not DEFAULT_CURRENT_REGLEMENT_FILE:
         return JSONResponse(
             build_upload_payload(
                 [],
-                "Aucun fichier importé",
+                "Aucun fichier configuré",
                 mode="default",
-                warnings=[
-                    "Aucun fichier du mois courant importé. "
-                    "Utilisez le bouton ci-dessous pour importer un fichier."
-                ],
+                warnings=["Aucun fichier configuré. "
+                          "Définissez CURRENT_REGLEMENT_FILE."],
             )
         )
 
-    # Fallback for local development when a path is explicitly configured
-    current_file = DEFAULT_CURRENT_REGLEMENT_FILE
-    rows, source_files, warnings = load_rows_from_paths([current_file])
-    label = f"Mois en cours · {os.path.basename(current_file)}"
+    cache = get_or_reload_cache()
+    current_path = uri_to_fs_path(DEFAULT_CURRENT_REGLEMENT_FILE)
+    label = f"Mois en cours · {os.path.basename(current_path)}"
+
     return JSONResponse(
         build_upload_payload(
-            rows,
+            cache["current_rows"],
             label,
             mode="default",
-            source_files=source_files,
-            warnings=warnings,
-            storage_status=None,
+            source_files=cache["current_source_files"],
+            warnings=cache["current_warnings"],
         )
     )
 
@@ -677,7 +552,6 @@ async def get_default_dashboard(session_id: str = None):
 async def get_dashboard_for_range(
     start_date: str = Query(..., description="Date de début au format AAAA-MM-JJ"),
     end_date: str = Query(..., description="Date de fin au format AAAA-MM-JJ"),
-    session_id: str = None,
 ):
     try:
         start = parse_iso_date(start_date)
@@ -686,55 +560,37 @@ async def get_dashboard_for_range(
         return JSONResponse({"detail": "Date invalide. Format attendu AAAA-MM-JJ."}, status_code=400)
 
     if start > end:
-        return JSONResponse({"detail": "La date de début doit être antérieure ou égale à la date de fin."}, status_code=400)
+        return JSONResponse(
+            {"detail": "La date de début doit être antérieure ou égale à la date de fin."},
+            status_code=400,
+        )
 
     label = f"Période du {start.strftime('%d/%m/%Y')} au {end.strftime('%d/%m/%Y')}"
 
-    sess = get_session(session_id)
-    if sess is not None:
-        # Use session-based uploaded data
-        current_rows: list[dict] = sess.get("current_rows", [])
-        history_rows, history_filenames = get_session_rows(sess)
-        all_rows = history_rows + current_rows
-        warnings: list[str] = []
-        if not current_rows and not history_rows:
-            warnings.append("Aucun fichier chargé. Veuillez importer les fichiers pour filtrer par date.")
-        elif not history_rows:
-            warnings.append("Aucun fichier historique chargé. Le filtre date n'utilise que le fichier mensuel.")
-        source_files = [f for f in ([sess.get("current_filename")] + history_filenames) if f]
-        storage_status = summarize_session(sess)
-    else:
-        # No session: show hosted-friendly message when no local paths are configured
-        if not DEFAULT_HISTORY_REGLEMENTS_DIR and not DEFAULT_CURRENT_REGLEMENT_FILE:
-            return JSONResponse(
-                build_upload_payload(
-                    [],
-                    label,
-                    mode="date_range",
-                    date_range={"start": start.isoformat(), "end": end.isoformat()},
-                    warnings=[
-                        "Aucun fichier importé. "
-                        "Veuillez importer les fichiers pour filtrer par date."
-                    ],
-                )
-            )
-        # Fallback for local development when paths are explicitly configured
-        history_files, warnings = list_reglement_files(DEFAULT_HISTORY_REGLEMENTS_DIR)
-        all_rows, source_files, load_warnings = load_rows_from_paths(history_files + [DEFAULT_CURRENT_REGLEMENT_FILE])
-        warnings = list(warnings) + load_warnings
-        storage_status = None
+    cache = get_or_reload_cache()
 
-    filtered_rows = filter_rows_by_date(all_rows, start, end)
+    if not DEFAULT_HISTORY_REGLEMENTS_DIR and not DEFAULT_CURRENT_REGLEMENT_FILE:
+        return JSONResponse(
+            build_upload_payload(
+                [],
+                label,
+                mode="date_range",
+                date_range={"start": start.isoformat(), "end": end.isoformat()},
+                warnings=["Aucun fichier configuré. "
+                          "Définissez CURRENT_REGLEMENT_FILE et HISTORY_REGLEMENTS_DIR."],
+            )
+        )
+
+    filtered_rows = filter_rows_by_date(cache["all_rows"], start, end)
 
     return JSONResponse(
         build_upload_payload(
             filtered_rows,
             label,
             mode="date_range",
-            source_files=source_files,
+            source_files=cache["source_files"],
             date_range={"start": start.isoformat(), "end": end.isoformat()},
-            warnings=warnings,
-            storage_status=storage_status,
+            warnings=cache["warnings"],
         )
     )
 
@@ -743,146 +599,19 @@ async def get_dashboard_for_range(
 async def get_dashboard_for_filter(
     start_date: str = Query(..., alias="start", description="Date de début au format AAAA-MM-JJ"),
     end_date: str = Query(..., alias="end", description="Date de fin au format AAAA-MM-JJ"),
-    session_id: str = None,
 ):
-    return await get_dashboard_for_range(start_date=start_date, end_date=end_date, session_id=session_id)
+    return await get_dashboard_for_range(start_date=start_date, end_date=end_date)
 
 
-@app.post("/upload")
-async def upload(file: UploadFile = File(...)):
-    content = await file.read()
-    try:
-        text = content.decode("utf-8")
-    except UnicodeDecodeError:
-        text = content.decode("latin-1")
-
-    rows = parse_lines(text)
-    return JSONResponse(
-        build_upload_payload(rows, file.filename, mode="upload", source_files=[file.filename])
-    )
+@app.get("/api/status")
+async def source_status():
+    """Return metadata about the loaded data cache for the source status panel."""
+    return JSONResponse(get_source_status())
 
 
-@app.post("/api/upload/current")
-async def upload_current(file: UploadFile = File(...), session_id: str = Form(default=None)):
-    content = await file.read()
-    text = decode_uploaded_content(content)
+@app.post("/api/refresh")
+async def refresh_data():
+    """Force a reload of all règlement data from the configured source paths."""
+    reload_cache()
+    return JSONResponse(get_source_status())
 
-    rows = parse_lines(text)
-    fname = file.filename or "REGLEMENT.txt"
-    cleanup_sessions()
-    sid, sess = get_or_create_session(session_id)
-    now = time.time()
-    sess["current_rows"] = rows
-    sess["current_filename"] = fname
-    sess["current_uploaded_at"] = now
-    sess["current_expires_at"] = now + SESSION_TTL
-    sess["last_updated_at"] = now
-    save_sessions()
-
-    payload = build_upload_payload(
-        rows,
-        fname,
-        mode="upload",
-        source_files=[fname],
-        storage_status=summarize_session(sess),
-    )
-    payload["session_id"] = sid
-    payload["retention_days"] = 7
-    return JSONResponse(payload)
-
-
-@app.post("/api/upload/history-file")
-async def upload_history_file(
-    background_tasks: BackgroundTasks,
-    file: UploadFile = File(...),
-    session_id: str = Form(default=None),
-    clear_history_before: str = Form(default=None),
-):
-    fname = file.filename or "history.txt"
-    sid, sess = get_or_create_session(session_id)
-    content = await file.read()
-    rows = parse_lines(decode_uploaded_content(content))
-
-    if not rows:
-        return JSONResponse(
-            {
-                "success": False,
-                "session_id": sid,
-                "filename": fname,
-                "error": f"Aucune ligne valide trouvée dans {fname}. Vérifiez le format texte ';' attendu.",
-            }
-        )
-
-    # Clear all existing history batches when starting a fresh batch upload
-    if isinstance(clear_history_before, str) and clear_history_before.lower() in ("true", "1", "yes"):
-        sess["history_batches"] = []
-
-    now = time.time()
-    uploaded_coverage = merge_history_batch(sess, rows, [fname], now)
-    # Persist to disk in the background so the response returns immediately
-    background_tasks.add_task(save_sessions)
-    return JSONResponse(
-        {
-            "success": True,
-            "session_id": sid,
-            "filename": fname,
-            "row_count": len(rows),
-            "uploaded_coverage": uploaded_coverage,
-            "retention_days": 7,
-            "storage_status": summarize_session(sess),
-        }
-    )
-
-
-@app.post("/api/upload/history")
-async def upload_history(files: list[UploadFile] = File(...), session_id: str = Form(default=None)):
-    cleanup_sessions()
-    sid, sess = get_or_create_session(session_id)
-    all_rows: list[dict] = []
-    filenames: list[str] = []
-    uploaded_coverage = {"start": None, "end": None}
-    for file in files:
-        content = await file.read()
-        rows = parse_lines(decode_uploaded_content(content))
-        if not rows:
-            continue
-        fname = file.filename or "history.txt"
-        now = time.time()
-        uploaded_coverage = merge_history_batch(sess, rows, [fname], now)
-        all_rows.extend(rows)
-        filenames.append(fname)
-
-    if not all_rows:
-        return JSONResponse(
-            {
-                "session_id": sid,
-                "retention_days": 7,
-                "uploaded_coverage": {"start": None, "end": None},
-                "warnings": ["Aucun fichier historique valide n'a été importé."],
-                "source_files": [],
-                "storage_status": summarize_session(sess),
-            }
-        )
-
-    save_sessions()
-
-    label = f"{len(filenames)} fichier(s) historique"
-    payload = build_upload_payload(
-        all_rows,
-        label,
-        mode="upload",
-        source_files=filenames,
-        storage_status=summarize_session(sess),
-    )
-    payload["session_id"] = sid
-    payload["retention_days"] = 7
-    payload["uploaded_coverage"] = uploaded_coverage
-    return JSONResponse(payload)
-
-
-@app.get("/api/session/status")
-async def session_status(session_id: str = None):
-    sess = get_session(session_id)
-    if not sess:
-        return JSONResponse({"valid": False, "has_current": False, "has_history": False})
-    return JSONResponse(summarize_session(sess))

@@ -97,29 +97,6 @@
     padding: 2rem 1.5rem;
   }
 
-  /* ── Upload ── */
-  .upload-card {
-    background: var(--surface);
-    border: 1.5px dashed var(--border2);
-    border-radius: var(--radius);
-    padding: 3rem 2rem;
-    text-align: center;
-    cursor: pointer;
-    transition: border-color 0.15s, background 0.15s;
-    margin-bottom: 2rem;
-  }
-  .upload-card:hover, .upload-card.drag { border-color: var(--teal); background: var(--teal-light); }
-  .upload-card input { display: none; }
-  .upload-icon {
-    width: 48px; height: 48px;
-    margin: 0 auto 1rem;
-    background: var(--teal-light);
-    border-radius: 12px;
-    display: flex; align-items: center; justify-content: center;
-  }
-  .upload-icon svg { width: 24px; height: 24px; stroke: var(--teal); fill: none; stroke-width: 1.8; }
-  .upload-title { font-size: 16px; font-weight: 600; margin-bottom: 6px; }
-  .upload-sub { font-size: 13px; color: var(--text2); }
   .upload-btn {
     display: inline-block;
     margin-top: 1.25rem;
@@ -360,96 +337,91 @@
     font-weight: 500;
   }
 
-  /* ── Upload section (two columns) ── */
-  .upload-section {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 1rem;
-    margin-bottom: 2rem;
-  }
-
-  /* ── Session status bar ── */
-  .session-status-bar {
-    background: var(--teal-light);
-    border: 0.5px solid var(--border);
-    border-radius: var(--radius);
-    padding: 9px 14px;
-    margin-bottom: 1rem;
-    display: flex;
-    align-items: center;
-    gap: 14px;
-    flex-wrap: wrap;
-    font-size: 12px;
-    color: var(--teal-dark);
-  }
-  .session-status-item {
-    display: flex;
-    align-items: center;
-    gap: 5px;
-  }
-  .status-dot {
-    width: 7px; height: 7px;
-    border-radius: 50%;
-    background: var(--teal);
-    flex-shrink: 0;
-  }
-  .coverage-banner {
-    display: none;
-    background: linear-gradient(135deg, var(--blue-light), var(--surface));
+  /* ── Source status panel ── */
+  .source-status-panel {
+    background: var(--surface);
     border: 0.5px solid var(--border);
     border-radius: var(--radius);
     padding: 14px 16px;
     margin-bottom: 1rem;
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 1rem;
+    flex-wrap: wrap;
   }
-  .coverage-label {
-    font-size: 11px;
-    letter-spacing: .06em;
-    text-transform: uppercase;
-    color: var(--text3);
-    margin-bottom: 6px;
+  .source-status-left { flex: 1; min-width: 0; }
+  .source-sync-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 10px;
   }
-  .coverage-range {
-    font-size: 20px;
-    font-weight: 650;
-    color: var(--text);
-    margin-bottom: 4px;
+  .sync-dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: var(--teal);
+    flex-shrink: 0;
   }
-  .coverage-sub {
-    font-size: 12px;
-    color: var(--text2);
-  }
-  .history-progress {
-    display: none;
-    background: var(--surface);
-    border: 0.5px solid var(--border);
-    border-radius: var(--radius);
-    padding: 12px 14px;
-    margin-bottom: 1rem;
-  }
-  .history-progress-title {
+  .sync-dot.warn { background: var(--amber); }
+  .sync-dot.offline { background: var(--text3); }
+  .source-sync-label {
     font-size: 13px;
     font-weight: 600;
-    margin-bottom: 6px;
+    color: var(--text);
   }
-  .history-progress-meta {
-    font-size: 12px;
+  .source-info-grid {
+    display: flex;
+    gap: 20px;
+    flex-wrap: wrap;
+  }
+  .source-info-item {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
+  .source-info-label {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: .06em;
+    color: var(--text3);
+    font-weight: 600;
+  }
+  .source-info-value {
+    font-size: 13px;
     color: var(--text2);
-    margin-bottom: 8px;
+    font-weight: 500;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 260px;
   }
-  .history-progress-list {
-    margin: 0;
-    padding-left: 16px;
+  .refresh-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 7px 14px;
+    background: var(--surface2);
+    color: var(--text);
+    border-radius: var(--radius-sm);
     font-size: 12px;
-    color: var(--text2);
-    line-height: 1.5;
+    font-weight: 500;
+    cursor: pointer;
+    border: 0.5px solid var(--border2);
+    transition: background 0.15s;
+    white-space: nowrap;
+    flex-shrink: 0;
+    align-self: center;
   }
-  .history-success { color: var(--teal-dark); }
-  .history-failure { color: var(--amber); }
+  .refresh-btn:hover { background: var(--teal-light); color: var(--teal-dark); border-color: var(--teal); }
+  .refresh-btn svg { width: 14px; height: 14px; stroke: currentColor; fill: none; stroke-width: 2; }
+  .refresh-btn.spinning svg { animation: spin .7s linear infinite; }
 
   /* ── Responsive ── */
   @media (max-width: 700px) {
     .stats-row { grid-template-columns: repeat(2,1fr); }
-    .upload-section { grid-template-columns: 1fr; }
+    .source-status-panel { flex-direction: column; }
     .filter-card { padding: 1rem; }
     .filter-form, .header-badges { width: 100%; }
     .filter-field input { min-width: 100%; }
@@ -473,15 +445,24 @@
 
 <main>
 
-  <div id="coverage-banner" class="coverage-banner"></div>
-
-  <!-- Session status bar -->
-  <div id="session-status-bar" class="session-status-bar" style="display:none"></div>
+  <div id="source-status" class="source-status-panel">
+    <div class="source-status-left">
+      <div class="source-sync-row">
+        <div class="sync-dot offline" id="sync-dot"></div>
+        <span class="source-sync-label" id="sync-label">Chargement…</span>
+      </div>
+      <div class="source-info-grid" id="source-info-grid"></div>
+    </div>
+    <button class="refresh-btn" id="refresh-btn" type="button">
+      <svg viewBox="0 0 24 24"><path d="M4 12a8 8 0 018-8 8 8 0 015.66 2.34L20 9M20 3v6h-6M20 12a8 8 0 01-8 8 8 8 0 01-5.66-2.34L4 15M4 21v-6h6"/></svg>
+      Actualiser
+    </button>
+  </div>
 
   <div class="filter-card">
     <div>
-      <div class="upload-title">Analyse Règlements</div>
-      <div class="upload-sub">Importez le fichier du mois en cours et, si besoin, les fichiers historiques, puis filtrez par période.</div>
+      <div class="upload-title">Filtrer par période</div>
+      <div class="upload-sub">Sélectionnez une plage de dates pour explorer les règlements historiques ou du mois en cours.</div>
     </div>
     <div class="filter-form">
       <label class="filter-field">
@@ -498,32 +479,6 @@
   </div>
 
   <div id="warning-banner" class="warning-banner"></div>
-  <div id="history-progress" class="history-progress"></div>
-
-  <!-- Upload zones -->
-  <div class="upload-section">
-
-    <div class="upload-card" id="dropzone-current" onclick="document.getElementById('fileInputCurrent').click()">
-      <input type="file" id="fileInputCurrent" accept=".txt">
-      <div class="upload-icon">
-        <svg viewBox="0 0 24 24"><path d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M16 12l-4-4-4 4M12 8v8"/></svg>
-      </div>
-      <div class="upload-title">Fichier du mois en cours</div>
-      <div class="upload-sub">Importez un fichier REGLEMENT.txt (fichier unique)</div>
-      <button class="upload-btn" onclick="event.stopPropagation();" onpointerdown="document.getElementById('fileInputCurrent').click()">Choisir un fichier</button>
-    </div>
-
-    <div class="upload-card" id="dropzone-history" onclick="document.getElementById('fileInputHistory').click()">
-      <input type="file" id="fileInputHistory" accept=".txt" multiple>
-      <div class="upload-icon">
-        <svg viewBox="0 0 24 24"><path d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M16 12l-4-4-4 4M12 8v8"/></svg>
-      </div>
-      <div class="upload-title">Fichiers historiques</div>
-      <div class="upload-sub">Importez plusieurs fichiers .txt pour le filtre par période</div>
-      <button class="upload-btn" onclick="event.stopPropagation();" onpointerdown="document.getElementById('fileInputHistory').click()">Choisir des fichiers</button>
-    </div>
-
-  </div>
 
   <!-- Stats row -->
   <div class="stats-row" id="stats-row" style="display:none">
@@ -646,20 +601,6 @@
 const fmt = n => n.toLocaleString('fr-TN', {minimumFractionDigits:3, maximumFractionDigits:3});
 const fmtI = n => n.toLocaleString('fr-TN');
 
-// ── Session management ────────────────────────────────────────────────────────
-const LS_KEY = 'sindSessionId';
-function getOrCreateSessionId() {
-  let sid = localStorage.getItem(LS_KEY);
-  if (!sid) {
-    sid = (typeof crypto !== 'undefined' && crypto.randomUUID)
-      ? crypto.randomUUID()
-      : (Date.now().toString(36) + Math.random().toString(36).slice(2));
-    localStorage.setItem(LS_KEY, sid);
-  }
-  return sid;
-}
-let SESSION_ID = getOrCreateSessionId();
-
 // ── DOM refs ──────────────────────────────────────────────────────────────────
 const emptyMsg = document.getElementById('empty-msg');
 const warningBanner = document.getElementById('warning-banner');
@@ -667,9 +608,9 @@ const rangeBadge = document.getElementById('range-badge');
 const fileBadge = document.getElementById('file-badge');
 const startDateInput = document.getElementById('start-date');
 const endDateInput = document.getElementById('end-date');
-const sessionStatusBar = document.getElementById('session-status-bar');
-const coverageBanner = document.getElementById('coverage-banner');
-const historyProgress = document.getElementById('history-progress');
+const syncDot = document.getElementById('sync-dot');
+const syncLabel = document.getElementById('sync-label');
+const sourceInfoGrid = document.getElementById('source-info-grid');
 
 // ── UI helpers ────────────────────────────────────────────────────────────────
 function setLoading(isLoading) {
@@ -700,28 +641,84 @@ function escapeHtml(value) {
   return (value || '').replace(/[&<>"'`]/g, match => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;', '`': '&#96;' }[match]));
 }
 
-function renderHistoryProgress(state) {
-  if (!state || !state.total) {
-    historyProgress.style.display = 'none';
-    historyProgress.innerHTML = '';
+function updateSourcePanel(status) {
+  if (!status) {
+    syncDot.className = 'sync-dot offline';
+    syncLabel.textContent = 'Impossible de contacter le serveur';
+    sourceInfoGrid.innerHTML = '';
     return;
   }
-  const status = state.done ? 'Terminé' : 'Import en cours';
-  const meta = state.processed + ' / ' + state.total + ' fichier(s) traités • '
-    + state.successes.length + ' succès • ' + state.failures.length + ' échec(s)';
-  const successItems = state.successes.map(filename => '<li class="history-success">✔ ' + escapeHtml(filename) + '</li>').join('');
-  const failureItems = state.failures.map(failure => '<li class="history-failure">✖ ' + escapeHtml(failure.filename) + ' — ' + escapeHtml(failure.error) + '</li>').join('');
-  historyProgress.innerHTML = ''
-    + '<div class="history-progress-title">' + status + ' · Import des historiques</div>'
-    + '<div class="history-progress-meta">' + meta + '</div>'
-    + '<ul class="history-progress-list">' + successItems + failureItems + '</ul>';
-  historyProgress.style.display = 'block';
+  if (!status.loaded) {
+    syncDot.className = 'sync-dot warn';
+    syncLabel.textContent = 'Données non chargées';
+    sourceInfoGrid.innerHTML = '';
+    return;
+  }
+
+  const hasWarnings = status.warnings && status.warnings.length > 0;
+  syncDot.className = 'sync-dot' + (hasWarnings ? ' warn' : '');
+  syncLabel.textContent = hasWarnings
+    ? 'Données chargées avec avertissements'
+    : 'Données chargées depuis le réseau local';
+
+  const items = [];
+
+  items.push({ label: 'Source mensuelle', value: status.current_source_label || '—' });
+  items.push({ label: 'Dossier historique', value: status.history_source_label || '—' });
+
+  if (status.coverage_start && status.coverage_end) {
+    items.push({
+      label: 'Période disponible',
+      value: formatExactDate(status.coverage_start) + ' → ' + formatExactDate(status.coverage_end),
+    });
+  }
+  items.push({
+    label: 'Fichiers chargés',
+    value: (status.source_file_count || 0) + ' fichier(s) dont ' + (status.history_file_count || 0) + ' historique(s)',
+  });
+  if (status.loaded_at) {
+    items.push({ label: 'Dernière sync', value: formatDateTime(status.loaded_at) });
+  }
+
+  sourceInfoGrid.innerHTML = items.map(item =>
+    '<div class="source-info-item">'
+    + '<span class="source-info-label">' + item.label + '</span>'
+    + '<span class="source-info-value" title="' + escapeHtml(item.value) + '">'
+    + escapeHtml(item.value) + '</span>'
+    + '</div>'
+  ).join('');
 }
 
-function formatMonthYear(value) {
-  if (!value) return '—';
-  const dt = new Date(value + 'T00:00:00');
-  return dt.toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' });
+async function loadSourceStatus() {
+  try {
+    const res = await fetch('/api/status');
+    const status = await res.json();
+    updateSourcePanel(status);
+    return status;
+  } catch (e) {
+    updateSourcePanel(null);
+    return null;
+  }
+}
+
+async function refreshData() {
+  const btn = document.getElementById('refresh-btn');
+  if (btn) btn.classList.add('spinning');
+  try {
+    const res = await fetch('/api/refresh', { method: 'POST' });
+    const status = await res.json();
+    updateSourcePanel(status);
+    // Reload the current view after data refresh.
+    if (startDateInput.value && endDateInput.value) {
+      await applyDateFilter();
+    } else {
+      await loadDefaultData();
+    }
+  } catch (e) {
+    updateSourcePanel(null);
+  } finally {
+    if (btn) btn.classList.remove('spinning');
+  }
 }
 
 function formatExactDate(value) {
@@ -740,58 +737,6 @@ function formatDateTime(ts) {
     hour: '2-digit',
     minute: '2-digit',
   });
-}
-
-function updateCoverageBanner(storage) {
-  if (!storage || !storage.valid || !storage.coverage_start || !storage.coverage_end) {
-    coverageBanner.style.display = 'none';
-    coverageBanner.innerHTML = '';
-    return;
-  }
-  const title = formatMonthYear(storage.coverage_start) + ' → ' + formatMonthYear(storage.coverage_end);
-  const subtitle = 'Du ' + formatExactDate(storage.coverage_start) + ' au ' + formatExactDate(storage.coverage_end)
-    + ' • ' + (storage.stored_file_count || 0) + ' fichier(s) stocké(s)';
-  coverageBanner.innerHTML = ''
-    + '<div class="coverage-label">Période de recherche disponible</div>'
-    + '<div class="coverage-range">' + title + '</div>'
-    + '<div class="coverage-sub">' + subtitle + '</div>';
-  coverageBanner.style.display = 'block';
-}
-
-function updateSessionStatusBar(status) {
-  if (!status || !status.valid) {
-    sessionStatusBar.style.display = 'none';
-    updateCoverageBanner(null);
-    return;
-  }
-  updateCoverageBanner(status);
-  const parts = [];
-  if (status.has_current) {
-    const fname = status.current_filename || 'REGLEMENT.txt';
-    parts.push('<span class="session-status-item"><span class="status-dot"></span>Mensuel\u00a0: ' + fname + '</span>');
-  }
-  if (status.has_history) {
-    const count = (status.history_filenames || []).length;
-    parts.push('<span class="session-status-item"><span class="status-dot"></span>Historique\u00a0: ' + count + ' fichier(s)</span>');
-  }
-  if (status.expires_at) {
-    const expiresAt = formatDateTime(status.expires_at);
-    const ttlDays = status.ttl_remaining_days !== undefined ? status.ttl_remaining_days : '';
-    parts.push('<span style="color:var(--text3);margin-left:auto">Conservé 7 jours • expire le ' + expiresAt + ' (' + ttlDays + ' j restants)</span>');
-  }
-  sessionStatusBar.innerHTML = parts.join('');
-  sessionStatusBar.style.display = 'flex';
-}
-
-async function loadSessionStatus() {
-  try {
-    const res = await fetch('/api/session/status?session_id=' + encodeURIComponent(SESSION_ID));
-    const status = await res.json();
-    updateSessionStatusBar(status);
-    return status;
-  } catch (e) {
-    return { valid: false };
-  }
 }
 
 // ── Data loading ──────────────────────────────────────────────────────────────
@@ -817,7 +762,7 @@ async function fetchDashboard(url) {
 function loadDefaultData() {
   startDateInput.value = '';
   endDateInput.value = '';
-  return fetchDashboard('/api/default?session_id=' + encodeURIComponent(SESSION_ID));
+  return fetchDashboard('/api/default');
 }
 
 function applyDateFilter() {
@@ -830,130 +775,13 @@ function applyDateFilter() {
     document.getElementById('results-section').style.display = 'none';
     return;
   }
-  const params = new URLSearchParams({ start_date: startDate, end_date: endDate, session_id: SESSION_ID });
+  const params = new URLSearchParams({ start_date: startDate, end_date: endDate });
   return fetchDashboard('/api/range?' + params.toString());
 }
 
-// ── Upload current month file ─────────────────────────────────────────────────
-async function uploadCurrentFile(file) {
-  setLoading(true);
-  showWarning([]);
-  const fd = new FormData();
-  fd.append('file', file);
-  fd.append('session_id', SESSION_ID);
-  try {
-    const res = await fetch('/api/upload/current', { method: 'POST', body: fd });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.detail || "Erreur lors de l'import.");
-    if (data.session_id) {
-      SESSION_ID = data.session_id;
-      localStorage.setItem(LS_KEY, SESSION_ID);
-    }
-    await loadSessionStatus();
-    render(data);
-  } catch (e) {
-    setLoading(false);
-    showWarning(["Erreur lors de l'import du fichier mensuel."]);
-    showEmpty("Impossible d'analyser le fichier sélectionné.");
-  }
-}
-
-// ── Upload history files ──────────────────────────────────────────────────────
-async function uploadHistoryFiles(files) {
-  if (!files || !files.length) return;
-  setLoading(true);
-  showWarning([]);
-  const progress = { total: files.length, processed: 0, successes: [], failures: [], done: false };
-  renderHistoryProgress(progress);
-  let firstError = null;
-  // The first file clears all previous history so the stored range matches
-  // exactly what the user is uploading now (no stale data from past sessions).
-  let isFirstFile = true;
-  for (const file of files) {
-    const fd = new FormData();
-    fd.append('file', file);
-    fd.append('session_id', SESSION_ID);
-    if (isFirstFile) {
-      fd.append('clear_history_before', 'true');
-      isFirstFile = false;
-    }
-    try {
-      const res = await fetch('/api/upload/history-file', { method: 'POST', body: fd });
-      const data = await res.json();
-      if (data.session_id) {
-        SESSION_ID = data.session_id;
-        localStorage.setItem(LS_KEY, SESSION_ID);
-      }
-      if (res.ok && data.success) {
-        progress.successes.push(file.name);
-      } else {
-        const msg = data.error || data.detail || "Erreur d'import.";
-        progress.failures.push({ filename: file.name, error: msg });
-        if (!firstError) firstError = msg;
-      }
-    } catch (e) {
-      const msg = "Échec réseau pendant l'import: " + (e?.message || "erreur inconnue");
-      progress.failures.push({ filename: file.name, error: msg });
-      if (!firstError) firstError = msg;
-    }
-    progress.processed += 1;
-    renderHistoryProgress(progress);
-  }
-  progress.done = true;
-  renderHistoryProgress(progress);
-  await loadSessionStatus();
-  setLoading(false);
-  document.getElementById('stats-row').style.display = 'none';
-  document.getElementById('results-section').style.display = 'none';
-  if (progress.failures.length) {
-    showWarning([
-      progress.failures.length + " fichier(s) n'ont pas pu être importés.",
-      firstError || "Une ou plusieurs erreurs sont survenues."
-    ]);
-  } else {
-    showWarning([]);
-  }
-  if (!progress.successes.length) {
-    showEmpty("Aucun fichier historique valide importé. Vérifiez le format puis réessayez.");
-    return;
-  }
-  showEmpty(
-    progress.successes.length + " fichier(s) historique importé(s) sur " + progress.total
-    + ". L'historique a été mis à jour. Sélectionnez une période ci-dessus pour filtrer."
-  );
-}
-
-// ── Drag & drop ───────────────────────────────────────────────────────────────
-const dzCurrent = document.getElementById('dropzone-current');
-if (dzCurrent) {
-  dzCurrent.addEventListener('dragover', e => { e.preventDefault(); dzCurrent.classList.add('drag'); });
-  dzCurrent.addEventListener('dragleave', () => dzCurrent.classList.remove('drag'));
-  dzCurrent.addEventListener('drop', e => {
-    e.preventDefault();
-    dzCurrent.classList.remove('drag');
-    const f = e.dataTransfer.files[0];
-    if (f) uploadCurrentFile(f);
-  });
-}
-const dzHistory = document.getElementById('dropzone-history');
-if (dzHistory) {
-  dzHistory.addEventListener('dragover', e => { e.preventDefault(); dzHistory.classList.add('drag'); });
-  dzHistory.addEventListener('dragleave', () => dzHistory.classList.remove('drag'));
-  dzHistory.addEventListener('drop', e => {
-    e.preventDefault();
-    dzHistory.classList.remove('drag');
-    if (e.dataTransfer.files.length) uploadHistoryFiles(e.dataTransfer.files);
-  });
-}
-
-document.getElementById('fileInputCurrent').addEventListener('change', e => {
-  if (e.target.files[0]) uploadCurrentFile(e.target.files[0]);
-});
-document.getElementById('fileInputHistory').addEventListener('change', e => {
-  if (e.target.files.length) uploadHistoryFiles(e.target.files);
-});
 document.getElementById('apply-filter').addEventListener('click', applyDateFilter);
 document.getElementById('reset-filter').addEventListener('click', loadDefaultData);
+document.getElementById('refresh-btn').addEventListener('click', refreshData);
 
 // ── Rendering ─────────────────────────────────────────────────────────────────
 function siteBadge(site) {
@@ -967,10 +795,6 @@ function camCell(cam, site) {
 function render(data) {
   setLoading(false);
   showWarning(data.warnings || []);
-  updateCoverageBanner(data.storage_status || null);
-  if (data.storage_status) {
-    updateSessionStatusBar(data.storage_status);
-  }
 
   const hasCamRows = !!(data.rows && data.rows.length);
   const hasSiteRows = !!(data.sites_summary && Object.keys(data.sites_summary).length);
@@ -978,9 +802,7 @@ function render(data) {
 
   const modeLabel = data.mode === 'date_range'
     ? 'Période filtrée'
-    : data.mode === 'upload'
-      ? 'Import mensuel'
-      : 'Mois en cours';
+    : 'Mois en cours';
   fileBadge.innerHTML = '<span class="file-badge">' + modeLabel + '</span>';
 
   const fileCount = data.source_files && data.source_files.length
@@ -1090,7 +912,7 @@ function switchTab(name) {
 }
 
 // ── Page load ─────────────────────────────────────────────────────────────────
-loadSessionStatus();
+loadSourceStatus();
 loadDefaultData();
 </script>
 </body>
