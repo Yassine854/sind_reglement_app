@@ -656,16 +656,31 @@ function updateSourcePanel(status) {
   }
 
   const hasWarnings = status.warnings && status.warnings.length > 0;
-  syncDot.className = 'sync-dot' + (hasWarnings ? ' warn' : '');
-  syncLabel.textContent = hasWarnings
-    ? 'Données chargées avec avertissements'
-    : 'Données chargées depuis le réseau local';
+  const syncRequired = !!status.sync_required;
+  const syncStatus = status.sync_status || 'not_required';
+  const syncOk = syncStatus === 'success' || syncStatus === 'not_required';
+  syncDot.className = 'sync-dot' + ((!syncOk || hasWarnings) ? ' warn' : '');
+  if (syncRequired && syncStatus === 'unsupported_runtime') {
+    syncLabel.textContent = 'Sync locale Windows non supportée sur ce runtime';
+  } else if (syncRequired && syncStatus === 'success') {
+    syncLabel.textContent = hasWarnings
+      ? 'Sync locale Windows réussie avec avertissements'
+      : 'Sync locale Windows réussie';
+  } else if (syncRequired) {
+    syncLabel.textContent = 'Sync locale Windows échouée';
+  } else {
+    syncLabel.textContent = hasWarnings
+      ? 'Données chargées avec avertissements'
+      : 'Données chargées depuis le réseau local';
+  }
 
   const items = [];
 
   items.push({ label: 'Source mensuelle', value: status.current_source_label || '—' });
   items.push({ label: 'Dossier historique', value: status.history_source_label || '—' });
   items.push({ label: 'Runtime backend', value: status.runtime_label || '—' });
+  items.push({ label: 'Mode de chargement', value: status.sync_mode || 'direct_read' });
+  items.push({ label: 'État synchronisation', value: status.sync_message || '—' });
 
   const currentDiag = status.current_diagnostic || {};
   const historyDiag = status.history_diagnostic || {};
@@ -709,6 +724,21 @@ function updateSourcePanel(status) {
     label: 'Dossier historique existe',
     value: historyDiag.directory_exists ? 'Oui' : 'Non',
   });
+  if (status.local_cache_root) {
+    items.push({ label: 'Cache local app', value: status.local_cache_root });
+  }
+  if (status.local_current_path) {
+    items.push({ label: 'Fichier mensuel copié', value: status.local_current_path });
+  }
+  if (status.local_history_path) {
+    items.push({ label: 'Dossier historique copié', value: status.local_history_path });
+  }
+  if (syncRequired) {
+    items.push({
+      label: 'Fichiers historiques copiés',
+      value: String(status.copied_history_files || 0),
+    });
+  }
 
   if (status.coverage_start && status.coverage_end) {
     items.push({

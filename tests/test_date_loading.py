@@ -37,6 +37,7 @@ class ReglementDateLoadingTests(unittest.TestCase):
             "history_file_count": 0,
             "source_diagnostics": {},
             "needs_client_loading": False,
+            "sync": {},
         })
 
     def test_parse_lines_uses_reglement_date_column(self):
@@ -235,6 +236,59 @@ class ReglementDateLoadingTests(unittest.TestCase):
         self.assertEqual(status["history_diagnostic"]["configured_source"], missing_history)
         self.assertTrue(status["history_diagnostic"]["resolved_path"].startswith("/mnt/reglement"))
         self.assertEqual(status["history_diagnostic"]["error_kind"], "missing")
+
+    def test_windows_local_sync_mode_fails_gracefully_on_non_windows(self):
+        current_uri = "file://172.16.100.34/Users/chokri.jdir/Desktop/TDB_SINDBAD/REGLEMENT.txt"
+        history_uri = "file://172.16.100.34/Users/chokri.jdir/Desktop/TDB_SINDBAD_Mens/R%C3%A9glements/"
+        with patch("app.DEFAULT_CURRENT_REGLEMENT_FILE", current_uri), patch(
+            "app.DEFAULT_HISTORY_REGLEMENTS_DIR", history_uri
+        ), patch("app.os.name", "posix"), patch("app.sys.platform", "linux"):
+            app_module.reload_cache()
+            status = get_source_status()
+
+        self.assertTrue(status["sync_required"])
+        self.assertEqual(status["sync_mode"], "windows_local_copy")
+        self.assertEqual(status["sync_status"], "unsupported_runtime")
+        self.assertIn("Windows", status["sync_message"])
+        self.assertEqual(status["source_file_count"], 0)
+
+    def test_windows_local_sync_copies_to_cache_before_parse(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            source_history = base / "Réglements"
+            source_history.mkdir()
+            source_current = base / "REGLEMENT.txt"
+            source_current.write_text(
+                "CESP-26-05-0000100;26-99-CAM39-00415;20260501;20260501;BJSSE;ESP;CLS03581;;;FAC-BJS-26-00414;71.9\n",
+                encoding="utf-8",
+            )
+            (source_history / "REGLEMENT_historique.txt").write_text(
+                "CTRT-26-04-0000078;;20260427;20260831;TUN;TRT;CLT06449;;BT;FAC-TUN-26-13006;1538.2\n",
+                encoding="utf-8",
+            )
+            local_cache = base / "cache"
+
+            with patch("app.DEFAULT_CURRENT_REGLEMENT_FILE", str(source_current)), patch(
+                "app.DEFAULT_HISTORY_REGLEMENTS_DIR", str(source_history)
+            ), patch("app.source_requires_windows_sync", return_value=True), patch(
+                "app.os.name", "nt"
+            ), patch(
+                "app.sys.platform", "win32"
+            ), patch(
+                "app.get_windows_sync_cache_dir", return_value=str(local_cache)
+            ):
+                reload_cache()
+                status = get_source_status()
+
+        self.assertEqual(status["sync_status"], "success")
+        self.assertEqual(status["sync_mode"], "windows_local_copy")
+        self.assertTrue(status["local_current_path"].startswith(str(local_cache)))
+        self.assertTrue(status["local_history_path"].startswith(str(local_cache)))
+        self.assertEqual(status["copied_history_files"], 1)
+        self.assertEqual(status["source_file_count"], 2)
+        self.assertEqual(status["history_file_count"], 1)
+        self.assertEqual(_cache["coverage_start"], "2026-04-27")
+        self.assertEqual(_cache["coverage_end"], "2026-05-01")
 
     def test_filter_endpoint_alias_works_with_start_and_end(self):
         with tempfile.TemporaryDirectory() as tmpdir:
