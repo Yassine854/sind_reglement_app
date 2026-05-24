@@ -145,20 +145,20 @@ def sync_windows_local_sources(current_source: str, history_source: str) -> dict
 
     copied_any = False
     copied_history_files = 0
-    monthly_cache_dir = os.path.join(cache_root, "monthly")
+    current_cache_dir = os.path.join(cache_root, "monthly")
     history_cache_dir = os.path.join(cache_root, "history")
 
     if current_source:
         resolved_current, _ = resolve_source_path(current_source)
         monthly_name = os.path.basename(resolved_current) or "REGLEMENT.txt"
-        local_current_path = os.path.join(monthly_cache_dir, monthly_name)
+        local_current_path = os.path.join(current_cache_dir, monthly_name)
         try:
             if not os.path.isfile(resolved_current):
                 result["warnings"].append(
                     f"Fichier mensuel introuvable pour la copie locale : {resolved_current}"
                 )
             else:
-                os.makedirs(monthly_cache_dir, exist_ok=True)
+                os.makedirs(current_cache_dir, exist_ok=True)
                 shutil.copy2(resolved_current, local_current_path)
                 result["local_current_path"] = local_current_path
                 copied_any = True
@@ -171,20 +171,19 @@ def sync_windows_local_sources(current_source: str, history_source: str) -> dict
     if history_source:
         resolved_history, _ = resolve_source_path(history_source)
         local_history_path = history_cache_dir
+        history_cache_tmp = os.path.join(cache_root, "history_tmp")
         try:
             if not os.path.isdir(resolved_history):
                 result["warnings"].append(
                     f"Dossier historique introuvable pour la copie locale : {resolved_history}"
                 )
             else:
-                os.makedirs(history_cache_dir, exist_ok=True)
-                for entry in os.listdir(history_cache_dir):
-                    entry_path = os.path.join(history_cache_dir, entry)
-                    if os.path.isdir(entry_path):
-                        shutil.rmtree(entry_path)
-                    else:
-                        os.remove(entry_path)
-                shutil.copytree(resolved_history, local_history_path, dirs_exist_ok=True)
+                if os.path.isdir(history_cache_tmp):
+                    shutil.rmtree(history_cache_tmp)
+                shutil.copytree(resolved_history, history_cache_tmp, dirs_exist_ok=True)
+                if os.path.isdir(local_history_path):
+                    shutil.rmtree(local_history_path)
+                os.replace(history_cache_tmp, local_history_path)
                 copied_history_files = len(
                     [
                         filename

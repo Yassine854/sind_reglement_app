@@ -661,7 +661,7 @@ function updateSourcePanel(status) {
   const syncOk = syncStatus === 'success' || syncStatus === 'not_required';
   syncDot.className = 'sync-dot' + ((!syncOk || hasWarnings) ? ' warn' : '');
   if (syncRequired && syncStatus === 'unsupported_runtime') {
-    syncLabel.textContent = 'Sync locale Windows non supportée sur ce runtime';
+    syncLabel.textContent = 'Sync locale Windows indisponible sur ce runtime';
   } else if (syncRequired && syncStatus === 'success') {
     syncLabel.textContent = hasWarnings
       ? 'Sync locale Windows réussie avec avertissements'
