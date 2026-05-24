@@ -14,17 +14,12 @@ Puis ouvrir **http://localhost:8000**
 
 1. Importez le dossier racine **Fichiers Sources** depuis l'interface.
    - L'application recherche automatiquement `REGLEMENT.txt` (mois courant).
-   - L'application recherche automatiquement le sous-dossier `Réglements` (historique).
-2. Les données sont chargées en mémoire après import (ou via le bouton **Actualiser**) pour éviter une relecture à chaque filtre.
-3. Le panneau source indique clairement l'état d'import :
-   - dossier racine importé
-   - présence de `REGLEMENT.txt`
-   - présence de `Réglements`
-   - nombre de fichiers historiques chargés
-4. Vous pouvez filtrer une période avec les champs **Du / Au** :
+   - L'application recherche automatiquement le sous-dossier `Réglements` (historique) et ignore les fichiers non pertinents.
+2. Les données sont chargées en mémoire après import pour éviter une relecture à chaque filtre.
+3. Vous pouvez filtrer une période avec les champs **Du / Au** :
    - le filtre s'applique sur l'ensemble des données stockées (mensuel + historiques)
    - la vue par défaut reste basée sur le fichier mensuel chargé
-5. Le dashboard affiche automatiquement :
+4. Le dashboard affiche automatiquement :
    - **Résumé global** : total réglé, nb transactions, CAMs actives
    - **Par type** : Espèces (CESP), Traite (CTRT), Chèque (CCHQR)
    - **Classement des CAMs** : rang, montant, site d'appartenance, répartition par type
