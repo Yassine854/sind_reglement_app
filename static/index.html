@@ -880,6 +880,10 @@ function setImportState(state, opts) {
   }
 }
 
+function normalizeToken(str) {
+  return (str || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+}
+
 function uploadWithProgress(formData, onProgress) {
   return new Promise(function(resolve, reject) {
     var xhr = new XMLHttpRequest();
@@ -890,7 +894,7 @@ function uploadWithProgress(formData, onProgress) {
     xhr.addEventListener('load', function() {
       try {
         var data = JSON.parse(xhr.responseText);
-        if (xhr.status >= 400) reject(new Error(data.detail || "Échec de l'import du dossier."));
+        if (xhr.status >= 400) reject(new Error(data.detail || ('Échec de l\'import du dossier (erreur ' + xhr.status + ').')));
         else resolve(data);
       } catch (_) {
         reject(new Error('Réponse invalide du serveur.'));
@@ -915,20 +919,23 @@ async function importFolderFromSelection() {
     if (parts.length === 2 && parts[1].toLowerCase() === 'reglement.txt') return true;
     // Files nested inside a folder whose name normalises to 'reglements'
     for (let i = 1; i < parts.length - 1; i++) {
-      const norm = parts[i].normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
-      if (norm === 'reglements') return true;
+      if (normalizeToken(parts[i]) === 'reglements') return true;
     }
     return false;
   });
 
-  const filesToUpload = relevantFiles.length > 0 ? relevantFiles : allFiles;
+  if (relevantFiles.length === 0) {
+    setImportState('error', { message: 'Aucun fichier REGLEMENT.txt ou dossier Réglements trouvé dans le dossier sélectionné.' });
+    folderInput.value = '';
+    return;
+  }
 
   setImportState('scanning');
   setLoading(true);
   showWarning([]);
 
   const formData = new FormData();
-  filesToUpload.forEach(function(f) {
+  relevantFiles.forEach(function(f) {
     formData.append('files', f, f.webkitRelativePath || f.name);
   });
 
