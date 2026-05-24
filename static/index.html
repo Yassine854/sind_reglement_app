@@ -409,6 +409,82 @@
   .source-info-item.ok { background: var(--teal-light); color: var(--teal-dark); }
   .source-info-item.warn { background: var(--amber-light); color: var(--amber); }
 
+  /* ── Import progress states ── */
+  .import-progress-zone {
+    width: 100%;
+    padding-top: 14px;
+    border-top: 0.5px solid var(--border);
+    margin-top: 14px;
+  }
+  .import-progress-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 8px;
+  }
+  .import-progress-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text);
+  }
+  .import-progress-pct {
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--teal);
+    min-width: 36px;
+    text-align: right;
+  }
+  .import-progress-track {
+    height: 5px;
+    background: var(--surface2);
+    border-radius: 99px;
+    overflow: hidden;
+  }
+  .import-progress-fill {
+    height: 100%;
+    background: linear-gradient(90deg, var(--teal), #0e7a5a);
+    border-radius: 99px;
+    transition: width 0.3s ease;
+    width: 0%;
+  }
+  .import-progress-fill.complete { background: var(--teal); }
+  .import-progress-fill.error { background: var(--pink); }
+  .import-progress-sub {
+    margin-top: 6px;
+    font-size: 12px;
+    color: var(--text3);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-height: 18px;
+  }
+  .import-spinner {
+    display: inline-block;
+    width: 11px; height: 11px;
+    border: 2px solid var(--border2);
+    border-top-color: var(--teal);
+    border-radius: 50%;
+    animation: spin .6s linear infinite;
+    flex-shrink: 0;
+  }
+  .import-result-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 10px;
+  }
+  .import-result-tag {
+    display: inline-flex;
+    align-items: center;
+    padding: 3px 10px;
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 600;
+  }
+  .import-result-tag.ok { background: var(--teal-light); color: var(--teal-dark); }
+  .import-result-tag.warn { background: var(--amber-light); color: var(--amber); }
+  .import-result-tag.err { background: var(--pink-light); color: var(--pink-dark); }
+
   /* ── Responsive ── */
   @media (max-width: 700px) {
     .stats-row { grid-template-columns: repeat(2,1fr); }
@@ -437,12 +513,22 @@
 <main>
 
   <div class="import-card">
-    <div>
+    <div style="flex:1;min-width:0;">
       <div class="import-title">Importer Fichiers Sources</div>
-      <div class="import-sub">Importez votre dossier pour charger automatiquement <strong>REGLEMENT.txt</strong> et les fichiers du dossier <strong>Réglements</strong>. Les autres fichiers sont ignorés.</div>
-      <div class="import-summary">Un nouvel import remplace simplement les données précédentes.</div>
+      <div class="import-sub">Sélectionnez votre dossier <strong>Fichiers Sources</strong> — <strong>REGLEMENT.txt</strong> et les fichiers du dossier <strong>Réglements</strong> seront détectés automatiquement.</div>
+      <div id="import-progress-zone" class="import-progress-zone" style="display:none">
+        <div class="import-progress-header">
+          <span class="import-progress-title" id="import-progress-title"></span>
+          <span class="import-progress-pct" id="import-progress-pct"></span>
+        </div>
+        <div class="import-progress-track">
+          <div class="import-progress-fill" id="import-progress-fill"></div>
+        </div>
+        <div class="import-progress-sub" id="import-progress-sub"></div>
+        <div class="import-result-tags" id="import-result-tags"></div>
+      </div>
     </div>
-    <div>
+    <div id="import-btn-wrap">
       <input type="file" id="folder-input" webkitdirectory directory multiple style="display:none">
       <button class="upload-btn" id="import-folder-btn" type="button">Importer le dossier</button>
     </div>
@@ -704,35 +790,167 @@ async function loadSourceStatus() {
   }
 }
 
-async function importFolderFromSelection() {
-  const selected = Array.from(folderInput.files || []);
-  if (!selected.length) return;
+// ── Import state manager ──────────────────────────────────────────────────────
+function setImportState(state, opts) {
+  opts = opts || {};
+  const zone = document.getElementById('import-progress-zone');
+  const btnWrap = document.getElementById('import-btn-wrap');
+  const titleEl = document.getElementById('import-progress-title');
+  const pctEl = document.getElementById('import-progress-pct');
+  const fillEl = document.getElementById('import-progress-fill');
+  const subEl = document.getElementById('import-progress-sub');
+  const tagsEl = document.getElementById('import-result-tags');
+  const btn = document.getElementById('import-folder-btn');
 
-  const formData = new FormData();
-  selected.forEach(file => {
-    const relativePath = file.webkitRelativePath || file.name;
-    formData.append('files', file, relativePath);
+  if (state === 'idle') {
+    zone.style.display = 'none';
+    btnWrap.style.display = '';
+    btn.disabled = false;
+    btn.textContent = 'Importer le dossier';
+    fillEl.className = 'import-progress-fill';
+    return;
+  }
+
+  zone.style.display = 'block';
+
+  if (state === 'scanning') {
+    btnWrap.style.display = 'none';
+    titleEl.textContent = 'Analyse du dossier\u2026';
+    pctEl.textContent = '';
+    fillEl.style.width = '5%';
+    fillEl.className = 'import-progress-fill';
+    subEl.innerHTML = '<span class="import-spinner"></span><span>Détection des fichiers de règlements\u2026</span>';
+    tagsEl.innerHTML = '';
+    return;
+  }
+
+  if (state === 'uploading') {
+    btnWrap.style.display = 'none';
+    const p = Math.max(5, opts.pct || 0);
+    titleEl.textContent = 'Importation en cours\u2026';
+    pctEl.textContent = p + '%';
+    fillEl.style.width = p + '%';
+    fillEl.className = 'import-progress-fill';
+    subEl.innerHTML = '<span class="import-spinner"></span><span>Envoi des fichiers de règlements\u2026</span>';
+    return;
+  }
+
+  if (state === 'success') {
+    const payload = opts.payload || {};
+    titleEl.textContent = 'Importation terminée';
+    pctEl.textContent = '\u2713';
+    fillEl.style.width = '100%';
+    fillEl.className = 'import-progress-fill complete';
+    subEl.innerHTML = '';
+
+    const tagItems = [];
+    if (payload.current_found) {
+      tagItems.push({ text: 'REGLEMENT.txt d\u00e9tect\u00e9', kind: 'ok' });
+    } else {
+      tagItems.push({ text: 'REGLEMENT.txt introuvable', kind: 'warn' });
+    }
+    if (payload.history_found) {
+      const n = payload.history_file_count || 0;
+      tagItems.push({ text: n + ' fichier(s) historique(s) d\u00e9tect\u00e9(s)', kind: 'ok' });
+    } else {
+      tagItems.push({ text: 'Dossier R\u00e9glements introuvable', kind: 'warn' });
+    }
+    tagsEl.innerHTML = tagItems.map(t =>
+      '<span class="import-result-tag ' + t.kind + '">' + escapeHtml(t.text) + '</span>'
+    ).join('');
+
+    btnWrap.style.display = '';
+    btn.disabled = false;
+    btn.textContent = 'R\u00e9-importer';
+    return;
+  }
+
+  if (state === 'error') {
+    titleEl.textContent = 'Import \u00e9chou\u00e9';
+    pctEl.textContent = '\u2717';
+    fillEl.style.width = '100%';
+    fillEl.className = 'import-progress-fill error';
+    subEl.textContent = opts.message || "Une erreur est survenue.";
+    tagsEl.innerHTML = '';
+
+    btnWrap.style.display = '';
+    btn.disabled = false;
+    btn.textContent = 'R\u00e9essayer';
+    return;
+  }
+}
+
+function normalizeToken(str) {
+  return (str || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+}
+
+function uploadWithProgress(formData, onProgress) {
+  return new Promise(function(resolve, reject) {
+    var xhr = new XMLHttpRequest();
+    xhr.open('POST', '/api/import-folder');
+    xhr.upload.addEventListener('progress', function(e) {
+      if (e.lengthComputable) onProgress(Math.round(e.loaded / e.total * 100));
+    });
+    xhr.addEventListener('load', function() {
+      try {
+        var data = JSON.parse(xhr.responseText);
+        if (xhr.status >= 400) reject(new Error(data.detail || ('Échec de l\'import du dossier (erreur ' + xhr.status + ').')));
+        else resolve(data);
+      } catch (_) {
+        reject(new Error('Réponse invalide du serveur.'));
+      }
+    });
+    xhr.addEventListener('error', function() { reject(new Error("Erreur réseau lors de l'import.")); });
+    xhr.addEventListener('abort', function() { reject(new Error('Import annulé.')); });
+    xhr.send(formData);
+  });
+}
+
+async function importFolderFromSelection() {
+  const allFiles = Array.from(folderInput.files || []);
+  if (!allFiles.length) return;
+
+  // Filter to only relevant règlement files (REGLEMENT.txt at root + files in Réglements/)
+  const relevantFiles = allFiles.filter(function(file) {
+    const path = (file.webkitRelativePath || file.name).replace(/\\/g, '/');
+    const parts = path.split('/').filter(function(p) { return p.length > 0; });
+    if (parts.length < 2) return false;
+    // REGLEMENT.txt directly under the selected folder root
+    if (parts.length === 2 && parts[1].toLowerCase() === 'reglement.txt') return true;
+    // Files nested inside a folder whose name normalises to 'reglements'
+    for (let i = 1; i < parts.length - 1; i++) {
+      if (normalizeToken(parts[i]) === 'reglements') return true;
+    }
+    return false;
   });
 
-  const importBtn = document.getElementById('import-folder-btn');
-  if (importBtn) importBtn.disabled = true;
+  if (relevantFiles.length === 0) {
+    setImportState('error', { message: 'Aucun fichier REGLEMENT.txt ou dossier Réglements trouvé dans le dossier sélectionné.' });
+    folderInput.value = '';
+    return;
+  }
+
+  setImportState('scanning');
   setLoading(true);
   showWarning([]);
+
+  const formData = new FormData();
+  relevantFiles.forEach(function(f) {
+    formData.append('files', f, f.webkitRelativePath || f.name);
+  });
+
   try {
-    const res = await fetch('/api/import-folder', { method: 'POST', body: formData });
-    const payload = await res.json();
-    if (!res.ok) {
-      throw new Error(payload.detail || "Échec de l'import du dossier.");
-    }
+    const payload = await uploadWithProgress(formData, function(pct) {
+      setImportState('uploading', { pct: pct });
+    });
+    setImportState('success', { payload: payload });
     updateSourcePanel(payload);
     await loadDefaultData();
-  } catch (error) {
+  } catch (err) {
     setLoading(false);
-    showWarning([error.message || "Échec de l'import du dossier."]);
-    showEmpty("Import impossible. Vérifiez le dossier Fichiers Sources.");
+    setImportState('error', { message: err.message || "Échec de l'import du dossier." });
   } finally {
     folderInput.value = '';
-    if (importBtn) importBtn.disabled = false;
   }
 }
 
@@ -796,7 +1014,7 @@ function applyDateFilter() {
 
 document.getElementById('apply-filter').addEventListener('click', applyDateFilter);
 document.getElementById('reset-filter').addEventListener('click', loadDefaultData);
-document.getElementById('import-folder-btn').addEventListener('click', () => folderInput.click());
+document.getElementById('import-folder-btn').addEventListener('click', function() { folderInput.click(); });
 folderInput.addEventListener('change', importFolderFromSelection);
 
 // ── Rendering ─────────────────────────────────────────────────────────────────
