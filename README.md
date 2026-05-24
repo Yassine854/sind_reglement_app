@@ -12,11 +12,15 @@ Puis ouvrir **http://localhost:8000**
 
 ## 📋 Utilisation
 
-1. L'application lit uniquement côté backend la source du mois courant et le dossier historique configurés (chemins `file://...` par défaut).
-   - Si la source est une URI distante/UNC (`file://serveur/...`), l'application active un mode **sync locale Windows**: copie locale (équivalent `xcopy`) vers un cache applicatif puis parsing depuis ce cache.
-   - Sur runtime non-Windows, ce mode échoue proprement avec un diagnostic d'action.
-2. Les données sont chargées en mémoire au démarrage (ou via le bouton **Actualiser**) pour éviter une relecture à chaque filtre.
-3. Un bandeau en haut affiche la **période couverte** par les fichiers chargés (mois/année + dates exactes).
+1. Importez le dossier racine **Fichiers Sources** depuis l'interface.
+   - L'application recherche automatiquement `REGLEMENT.txt` (mois courant).
+   - L'application recherche automatiquement le sous-dossier `Réglements` (historique).
+2. Les données sont chargées en mémoire après import (ou via le bouton **Actualiser**) pour éviter une relecture à chaque filtre.
+3. Le panneau source indique clairement l'état d'import :
+   - dossier racine importé
+   - présence de `REGLEMENT.txt`
+   - présence de `Réglements`
+   - nombre de fichiers historiques chargés
 4. Vous pouvez filtrer une période avec les champs **Du / Au** :
    - le filtre s'applique sur l'ensemble des données stockées (mensuel + historiques)
    - la vue par défaut reste basée sur le fichier mensuel chargé
@@ -27,12 +31,11 @@ Puis ouvrir **http://localhost:8000**
    - **Par site** : totaux regroupés par site (SFX, MAH, NAB, SSE, TUN), y compris les lignes sans CAM explicite si le site est présent
 ### Variables d'environnement optionnelles
 
-Pour tester l'application sur une autre machine ou avec des fichiers temporaires, vous pouvez surcharger les chemins par défaut :
+Le mode principal est l'import du dossier. En secours, vous pouvez encore définir des chemins backend :
 
 - `CURRENT_REGLEMENT_FILE`
 - `HISTORY_REGLEMENTS_DIR`
 - `FILE_URI_MOUNT_ROOT` (optionnel sur Linux/macOS pour mapper `file://serveur/...` vers un point de montage local)
-- `WINDOWS_SYNC_CACHE_DIR` (optionnel, dossier de cache local utilisé par la sync locale Windows)
 
 ## 🗺️ Sites et CAMs
 

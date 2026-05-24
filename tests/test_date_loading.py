@@ -1,4 +1,5 @@
 import asyncio
+from io import BytesIO
 import json
 import os
 import tempfile
@@ -7,6 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import app as app_module
+from starlette.datastructures import UploadFile
 from app import (
     _cache,
     file_uri_to_fs_path,
@@ -14,6 +16,7 @@ from app import (
     get_dashboard_for_filter,
     get_dashboard_for_range,
     get_default_dashboard,
+    import_folder,
     parse_lines,
     read_text_file,
     reload_cache,
@@ -38,6 +41,7 @@ class ReglementDateLoadingTests(unittest.TestCase):
             "source_diagnostics": {},
             "needs_client_loading": False,
             "sync": {},
+            "import_context": {},
         })
 
     def test_parse_lines_uses_reglement_date_column(self):
@@ -237,58 +241,55 @@ class ReglementDateLoadingTests(unittest.TestCase):
         self.assertTrue(status["history_diagnostic"]["resolved_path"].startswith("/mnt/reglement"))
         self.assertEqual(status["history_diagnostic"]["error_kind"], "missing")
 
-    def test_windows_local_sync_mode_fails_gracefully_on_non_windows(self):
-        current_uri = "file://172.16.100.34/Users/chokri.jdir/Desktop/TDB_SINDBAD/REGLEMENT.txt"
-        history_uri = "file://172.16.100.34/Users/chokri.jdir/Desktop/TDB_SINDBAD_Mens/R%C3%A9glements/"
-        with patch("app.DEFAULT_CURRENT_REGLEMENT_FILE", current_uri), patch(
-            "app.DEFAULT_HISTORY_REGLEMENTS_DIR", history_uri
-        ), patch("app.os.name", "posix"), patch("app.sys.platform", "linux"):
-            app_module.reload_cache()
-            status = get_source_status()
+    def test_folder_import_loads_current_and_history_files(self):
+        monthly_line = (
+            "CESP-26-05-0000100;26-99-CAM39-00415;20260501;20260501;BJSSE;ESP;CLS03581;;;FAC-BJS-26-00414;71.9\n"
+        )
+        history_line = (
+            "CTRT-26-04-0000078;;20260427;20260831;TUN;TRT;CLT06449;;BT;FAC-TUN-26-13006;1538.2\n"
+        )
+        files = [
+            UploadFile(
+                filename="Fichiers Sources/REGLEMENT.txt",
+                file=BytesIO(monthly_line.encode("utf-8")),
+            ),
+            UploadFile(
+                filename="Fichiers Sources/Réglements/REGLEMENT_historique.txt",
+                file=BytesIO(history_line.encode("utf-8")),
+            ),
+        ]
 
-        self.assertTrue(status["sync_required"])
-        self.assertEqual(status["sync_mode"], "windows_local_copy")
-        self.assertEqual(status["sync_status"], "unsupported_runtime")
-        self.assertIn("Windows", status["sync_message"])
-        self.assertEqual(status["source_file_count"], 0)
+        response = asyncio.run(import_folder(files))
+        status = json.loads(response.body)
 
-    def test_windows_local_sync_copies_to_cache_before_parse(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            base = Path(tmpdir)
-            source_history = base / "Réglements"
-            source_history.mkdir()
-            source_current = base / "REGLEMENT.txt"
-            source_current.write_text(
-                "CESP-26-05-0000100;26-99-CAM39-00415;20260501;20260501;BJSSE;ESP;CLS03581;;;FAC-BJS-26-00414;71.9\n",
-                encoding="utf-8",
-            )
-            (source_history / "REGLEMENT_historique.txt").write_text(
-                "CTRT-26-04-0000078;;20260427;20260831;TUN;TRT;CLT06449;;BT;FAC-TUN-26-13006;1538.2\n",
-                encoding="utf-8",
-            )
-            local_cache = base / "cache"
-
-            with patch("app.DEFAULT_CURRENT_REGLEMENT_FILE", str(source_current)), patch(
-                "app.DEFAULT_HISTORY_REGLEMENTS_DIR", str(source_history)
-            ), patch("app.source_requires_windows_sync", return_value=True), patch(
-                "app.os.name", "nt"
-            ), patch(
-                "app.sys.platform", "win32"
-            ), patch(
-                "app.get_windows_sync_cache_dir", return_value=str(local_cache)
-            ):
-                reload_cache()
-                status = get_source_status()
-
-        self.assertEqual(status["sync_status"], "success")
-        self.assertEqual(status["sync_mode"], "windows_local_copy")
-        self.assertTrue(status["local_current_path"].startswith(str(local_cache)))
-        self.assertTrue(status["local_history_path"].startswith(str(local_cache)))
-        self.assertEqual(status["copied_history_files"], 1)
+        self.assertEqual(status["source_mode"], "uploaded_folder")
+        self.assertEqual(status["uploaded_root_name"], "Fichiers Sources")
+        self.assertTrue(status["current_found"])
+        self.assertTrue(status["history_found"])
         self.assertEqual(status["source_file_count"], 2)
         self.assertEqual(status["history_file_count"], 1)
         self.assertEqual(_cache["coverage_start"], "2026-04-27")
         self.assertEqual(_cache["coverage_end"], "2026-05-01")
+
+    def test_folder_import_reports_missing_reglements_folder(self):
+        files = [
+            UploadFile(
+                filename="Fichiers Sources/REGLEMENT.txt",
+                file=BytesIO(
+                    "CESP-26-05-0000100;26-99-CAM39-00415;20260501;20260501;BJSSE;ESP;CLS03581;;;FAC-BJS-26-00414;71.9\n".encode(
+                        "utf-8"
+                    )
+                ),
+            )
+        ]
+
+        response = asyncio.run(import_folder(files))
+        status = json.loads(response.body)
+
+        self.assertTrue(status["current_found"])
+        self.assertFalse(status["history_found"])
+        self.assertTrue(status["warnings"])
+        self.assertTrue(any("Réglements" in warning for warning in status["warnings"]))
 
     def test_filter_endpoint_alias_works_with_start_and_end(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -319,8 +320,7 @@ class ReglementDateLoadingTests(unittest.TestCase):
         payload = json.loads(response.body)
         self.assertEqual(payload["grand_count"], 0)
         self.assertTrue(payload["warnings"])
-        self.assertNotIn("D:", payload["warnings"][0])
-        self.assertIn("Aucun fichier", payload["warnings"][0])
+        self.assertIn("Aucune donnée importée", payload["warnings"][0])
 
     def test_range_endpoint_hosted_friendly_message_when_no_paths_configured(self):
         with patch("app.DEFAULT_CURRENT_REGLEMENT_FILE", ""), patch(
@@ -333,8 +333,7 @@ class ReglementDateLoadingTests(unittest.TestCase):
         payload = json.loads(response.body)
         self.assertEqual(payload["grand_count"], 0)
         self.assertTrue(payload["warnings"])
-        self.assertNotIn("D:", payload["warnings"][0])
-        self.assertIn("Aucun fichier", payload["warnings"][0])
+        self.assertIn("Aucune donnée importée", payload["warnings"][0])
 
     def test_coverage_range_uses_true_bounds_for_unsorted_file_rows(self):
         """Display range must use min/max of all parsed row dates, not first/last row."""

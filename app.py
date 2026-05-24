@@ -8,9 +8,10 @@ import shutil
 import sys
 import tempfile
 import time
+import unicodedata
 from urllib.parse import quote, unquote, urlsplit
 
-from fastapi import FastAPI, Query, Request
+from fastapi import FastAPI, File, Query, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -26,16 +27,16 @@ TYPE_MAP = {
 
 VALID_SITES = {"SFX", "MAH", "NAB", "SSE", "TUN"}
 
-# ── Source configuration (internal-network paths) ─────────────────────────────
-# Accepts plain filesystem paths or file:// URIs with optional percent-encoding.
-# Override via environment variables for alternate deployments.
+# ── Source configuration ───────────────────────────────────────────────────────
+# Folder upload/import is the primary workflow. These env vars remain as an
+# optional legacy fallback when no folder has been uploaded.
 DEFAULT_CURRENT_REGLEMENT_FILE = os.environ.get(
     "CURRENT_REGLEMENT_FILE",
-    "file://172.16.100.34/Users/chokri.jdir/Desktop/TDB_SINDBAD/REGLEMENT.txt",
+    "",
 )
 DEFAULT_HISTORY_REGLEMENTS_DIR = os.environ.get(
     "HISTORY_REGLEMENTS_DIR",
-    "file://172.16.100.34/Users/chokri.jdir/Desktop/TDB_SINDBAD_Mens/R%C3%A9glements/",
+    "",
 )
 WINDOWS_SYNC_CACHE_DIR = os.environ.get(
     "WINDOWS_SYNC_CACHE_DIR",
@@ -56,6 +57,7 @@ _cache: dict = {
     "history_file_count": 0,
     "source_diagnostics": {},
     "sync": {},
+    "import_context": {},
 }
 
 CAM_SITE_MAP: dict[str, str] = {
@@ -98,6 +100,52 @@ def normalize_site(site: str | None) -> str:
 
 def is_file_uri(source: str) -> bool:
     return bool(source and source.startswith("file://"))
+
+
+def normalize_token(value: str) -> str:
+    normalized = unicodedata.normalize("NFKD", value or "")
+    return "".join(ch for ch in normalized if not unicodedata.combining(ch)).casefold()
+
+
+def is_reglements_dir_name(name: str) -> bool:
+    return normalize_token(name) == "reglements"
+
+
+def discover_uploaded_sources(root_dir: str) -> dict:
+    current_file: str | None = None
+    history_dir: str | None = None
+
+    for dirpath, dirnames, filenames in os.walk(root_dir):
+        dirnames.sort(key=str.casefold)
+        filenames.sort(key=str.casefold)
+        if history_dir is None:
+            for dirname in dirnames:
+                if is_reglements_dir_name(dirname):
+                    history_dir = os.path.join(dirpath, dirname)
+                    break
+        if current_file is None:
+            for filename in filenames:
+                if filename.casefold() == "reglement.txt":
+                    current_file = os.path.join(dirpath, filename)
+                    break
+        if current_file and history_dir:
+            break
+
+    warnings: list[str] = []
+    if not current_file:
+        warnings.append("Le fichier attendu REGLEMENT.txt est introuvable dans le dossier importé.")
+    if not history_dir:
+        warnings.append("Le dossier attendu Réglements est introuvable dans le dossier importé.")
+
+    return {
+        "root_path": root_dir,
+        "root_name": os.path.basename(os.path.normpath(root_dir)) or "Fichiers Sources",
+        "current_path": current_file or "",
+        "history_path": history_dir or "",
+        "current_found": bool(current_file),
+        "history_found": bool(history_dir),
+        "warnings": warnings,
+    }
 
 
 def get_file_uri_mount_root() -> str | None:
@@ -550,66 +598,41 @@ def get_rows_bounds(rows: list[dict]) -> tuple[date | None, date | None]:
 # ── Cache management ──────────────────────────────────────────────────────────
 
 def reload_cache() -> None:
-    """Read all règlement files from the configured source paths and populate
-    the in-memory cache.  Existing cached data is replaced atomically.
+    """Read règlement files from uploaded-folder context (primary) or optional fallback paths."""
+    import_context = _cache.get("import_context") or {}
+    using_uploaded_folder = bool(import_context.get("active"))
 
-    Configured ``file://`` URIs (including remote ones such as
-    ``file://172.16.100.34/...``) are resolved to OS/network-share-readable
-    paths by :func:`file_uri_to_fs_path` before reading.  On POSIX systems a
-    remote URI host component is treated as a UNC host (``//host/path``); on
-    Windows it becomes ``\\host\\path``.
-
-    All source access happens exclusively on the backend.  The frontend must
-    never fetch ``file://`` resources directly.
-    """
-    current_uri = DEFAULT_CURRENT_REGLEMENT_FILE
-    history_uri = DEFAULT_HISTORY_REGLEMENTS_DIR
-
-    current_path = current_uri or ""
-    history_dir = history_uri or ""
-
+    current_path = (import_context.get("current_path") if using_uploaded_folder else DEFAULT_CURRENT_REGLEMENT_FILE) or ""
+    history_dir = (import_context.get("history_path") if using_uploaded_folder else DEFAULT_HISTORY_REGLEMENTS_DIR) or ""
     warnings: list[str] = []
+    if using_uploaded_folder:
+        warnings.extend(import_context.get("warnings", []))
+
     current_diagnostic = inspect_source_path(current_path, expect_directory=False)
     history_diagnostic = inspect_source_path(history_dir, expect_directory=True)
-    current_requires_sync = source_requires_windows_sync(current_path)
-    history_requires_sync = source_requires_windows_sync(history_dir)
-    sync_required = current_requires_sync or history_requires_sync
     sync_info = {
-        "required": sync_required,
-        "mode": "windows_local_copy" if sync_required else "direct_read",
-        "status": "not_required",
-        "message": "Lecture directe des sources configurées.",
-        "cache_root": None,
-        "local_current_path": None,
-        "local_history_path": None,
+        "required": False,
+        "mode": "uploaded_folder" if using_uploaded_folder else "configured_paths",
+        "status": "ready",
+        "message": (
+            "Chargement depuis le dossier importé."
+            if using_uploaded_folder
+            else "Chargement depuis les chemins configurés."
+        ),
+        "cache_root": import_context.get("root_path") if using_uploaded_folder else None,
+        "local_current_path": current_path if using_uploaded_folder else None,
+        "local_history_path": history_dir if using_uploaded_folder else None,
         "copied_history_files": 0,
     }
 
-    if sync_required:
-        sync_result = sync_windows_local_sources(
-            current_path if current_requires_sync else "",
-            history_dir if history_requires_sync else "",
-        )
-        warnings.extend(sync_result["warnings"])
-        sync_info.update({
-            "mode": sync_result["mode"],
-            "status": sync_result["status"],
-            "message": sync_result["message"],
-            "cache_root": sync_result["cache_root"],
-            "local_current_path": sync_result["local_current_path"],
-            "local_history_path": sync_result["local_history_path"],
-            "copied_history_files": sync_result["copied_history_files"],
-        })
-        if current_requires_sync:
-            current_path = sync_result["local_current_path"] or ""
-        if history_requires_sync:
-            history_dir = sync_result["local_history_path"] or ""
-
     if not current_path and not history_dir:
-        if not sync_required:
+        if using_uploaded_folder:
             warnings.append(
-                "Aucun fichier configuré. "
-                "Définissez CURRENT_REGLEMENT_FILE et HISTORY_REGLEMENTS_DIR."
+                "Le dossier importé doit contenir REGLEMENT.txt et le sous-dossier Réglements."
+            )
+        else:
+            warnings.append(
+                "Aucune donnée importée. Importez le dossier racine Fichiers Sources."
             )
         _cache.update({
             "all_rows": [],
@@ -684,6 +707,10 @@ def get_source_status() -> dict:
     """Return a status dict describing the current cache state for the UI."""
     cache = get_or_reload_cache()
     loaded_at = cache["loaded_at"]
+    import_context = cache.get("import_context", {})
+    using_uploaded_folder = bool(import_context.get("active"))
+    current_source = import_context.get("current_path") if using_uploaded_folder else DEFAULT_CURRENT_REGLEMENT_FILE
+    history_source = import_context.get("history_path") if using_uploaded_folder else DEFAULT_HISTORY_REGLEMENTS_DIR
     return {
         "loaded": loaded_at is not None,
         "loaded_at": loaded_at,
@@ -694,15 +721,22 @@ def get_source_status() -> dict:
         "has_data": bool(cache["all_rows"]),
         "warnings": cache["warnings"],
         "current_source_label": (
-            get_source_label(DEFAULT_CURRENT_REGLEMENT_FILE)
-            if DEFAULT_CURRENT_REGLEMENT_FILE
+            get_source_label(current_source)
+            if current_source
             else "—"
         ),
         "history_source_label": (
-            get_source_label(DEFAULT_HISTORY_REGLEMENTS_DIR)
-            if DEFAULT_HISTORY_REGLEMENTS_DIR
+            get_source_label(history_source)
+            if history_source
             else "—"
         ),
+        "source_mode": "uploaded_folder" if using_uploaded_folder else "configured_paths",
+        "uploaded_root_name": import_context.get("root_name"),
+        "uploaded_root_path": import_context.get("root_path"),
+        "expected_current_name": "REGLEMENT.txt",
+        "expected_history_name": "Réglements",
+        "current_found": import_context.get("current_found", bool(current_source)),
+        "history_found": import_context.get("history_found", bool(history_source)),
         "runtime_label": f"{os.name}/{sys.platform}",
         "current_diagnostic": cache.get("source_diagnostics", {}).get("current", {}),
         "history_diagnostic": cache.get("source_diagnostics", {}).get("history", {}),
@@ -858,20 +892,12 @@ def build_upload_payload(
 
 @app.get("/api/default")
 async def get_default_dashboard():
-    if not DEFAULT_CURRENT_REGLEMENT_FILE:
-        return JSONResponse(
-            build_upload_payload(
-                [],
-                "Aucun fichier configuré",
-                mode="default",
-                warnings=["Aucun fichier configuré. "
-                          "Définissez CURRENT_REGLEMENT_FILE."],
-            )
-        )
-
     cache = get_or_reload_cache()
-    current_source = DEFAULT_CURRENT_REGLEMENT_FILE
+    import_context = cache.get("import_context", {})
+    using_uploaded_folder = bool(import_context.get("active"))
+    current_source = import_context.get("current_path") if using_uploaded_folder else DEFAULT_CURRENT_REGLEMENT_FILE
     label = f"Mois en cours · {get_source_label(current_source)}"
+    default_warnings = cache["current_warnings"] if cache["current_source_files"] else cache["warnings"]
 
     return JSONResponse(
         build_upload_payload(
@@ -879,7 +905,7 @@ async def get_default_dashboard():
             label,
             mode="default",
             source_files=cache["current_source_files"],
-            warnings=cache["current_warnings"],
+            warnings=default_warnings,
         )
     )
 
@@ -904,19 +930,6 @@ async def get_dashboard_for_range(
     label = f"Période du {start.strftime('%d/%m/%Y')} au {end.strftime('%d/%m/%Y')}"
 
     cache = get_or_reload_cache()
-
-    if not DEFAULT_HISTORY_REGLEMENTS_DIR and not DEFAULT_CURRENT_REGLEMENT_FILE:
-        return JSONResponse(
-            build_upload_payload(
-                [],
-                label,
-                mode="date_range",
-                date_range={"start": start.isoformat(), "end": end.isoformat()},
-                warnings=["Aucun fichier configuré. "
-                          "Définissez CURRENT_REGLEMENT_FILE et HISTORY_REGLEMENTS_DIR."],
-            )
-        )
-
     filtered_rows = filter_rows_by_date(cache["all_rows"], start, end)
 
     return JSONResponse(
@@ -948,5 +961,78 @@ async def source_status():
 @app.post("/api/refresh")
 async def refresh_data():
     """Force a reload of all règlement data from the configured source paths."""
+    reload_cache()
+    return JSONResponse(get_source_status())
+
+
+@app.post("/api/import-folder")
+async def import_folder(files: list[UploadFile] = File(...)):
+    if not files:
+        return JSONResponse(
+            {"detail": "Aucun fichier reçu. Sélectionnez le dossier Fichiers Sources."},
+            status_code=400,
+        )
+
+    import_root = tempfile.mkdtemp(prefix="sind_reglement_import_")
+    uploaded_root_name: str | None = None
+    saved_files = 0
+    warnings: list[str] = []
+
+    for upload in files:
+        raw_rel_path = (upload.filename or "").replace("\\", "/").strip("/")
+        if not raw_rel_path:
+            await upload.close()
+            continue
+        segments = [segment for segment in raw_rel_path.split("/") if segment not in {"", ".", ".."}]
+        if not segments:
+            await upload.close()
+            continue
+        if len(segments) > 1:
+            uploaded_root_name = uploaded_root_name or segments[0]
+            relative_segments = segments[1:]
+        else:
+            relative_segments = segments
+        if not relative_segments:
+            await upload.close()
+            continue
+
+        destination_path = os.path.join(import_root, *relative_segments)
+        os.makedirs(os.path.dirname(destination_path), exist_ok=True)
+        content = await upload.read()
+        with open(destination_path, "wb") as out:
+            out.write(content)
+        saved_files += 1
+        await upload.close()
+
+    if saved_files == 0:
+        shutil.rmtree(import_root, ignore_errors=True)
+        return JSONResponse(
+            {"detail": "Le dossier importé est vide ou invalide."},
+            status_code=400,
+        )
+
+    previous_context = _cache.get("import_context") or {}
+    previous_root = previous_context.get("root_path")
+    if previous_root and previous_root != import_root:
+        shutil.rmtree(previous_root, ignore_errors=True)
+
+    discovered = discover_uploaded_sources(import_root)
+    expected_root_name = "Fichiers Sources"
+    if uploaded_root_name:
+        discovered["root_name"] = uploaded_root_name
+        if normalize_token(uploaded_root_name) != normalize_token(expected_root_name):
+            warnings.append(
+                f"Dossier racine détecté: {uploaded_root_name}. "
+                f"Le dossier attendu est {expected_root_name}."
+            )
+    else:
+        discovered["root_name"] = expected_root_name
+
+    discovered["warnings"] = warnings + discovered.get("warnings", [])
+    _cache["import_context"] = {
+        **discovered,
+        "active": True,
+        "uploaded_at": time.time(),
+    }
     reload_cache()
     return JSONResponse(get_source_status())

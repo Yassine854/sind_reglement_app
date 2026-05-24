@@ -465,6 +465,8 @@
       <div class="upload-sub">Sélectionnez une plage de dates pour explorer les règlements historiques ou du mois en cours.</div>
     </div>
     <div class="filter-form">
+      <input type="file" id="folder-input" webkitdirectory directory multiple style="display:none">
+      <button class="upload-btn" id="import-folder-btn" type="button">Importer Fichiers Sources</button>
       <label class="filter-field">
         <span>Du</span>
         <input type="date" id="start-date">
@@ -611,6 +613,7 @@ const endDateInput = document.getElementById('end-date');
 const syncDot = document.getElementById('sync-dot');
 const syncLabel = document.getElementById('sync-label');
 const sourceInfoGrid = document.getElementById('source-info-grid');
+const folderInput = document.getElementById('folder-input');
 
 // ── UI helpers ────────────────────────────────────────────────────────────────
 function setLoading(isLoading) {
@@ -656,31 +659,32 @@ function updateSourcePanel(status) {
   }
 
   const hasWarnings = status.warnings && status.warnings.length > 0;
-  const syncRequired = !!status.sync_required;
-  const syncStatus = status.sync_status || 'not_required';
-  const syncOk = syncStatus === 'success' || syncStatus === 'not_required';
-  syncDot.className = 'sync-dot' + ((!syncOk || hasWarnings) ? ' warn' : '');
-  if (syncRequired && syncStatus === 'unsupported_runtime') {
-    syncLabel.textContent = 'Sync locale Windows indisponible sur ce runtime';
-  } else if (syncRequired && syncStatus === 'success') {
-    syncLabel.textContent = hasWarnings
-      ? 'Sync locale Windows réussie avec avertissements'
-      : 'Sync locale Windows réussie';
-  } else if (syncRequired) {
-    syncLabel.textContent = 'Sync locale Windows échouée';
+  const isUploadedMode = status.source_mode === 'uploaded_folder';
+  const expectedReady = !!status.current_found && !!status.history_found;
+  syncDot.className = 'sync-dot' + ((hasWarnings || !expectedReady) ? ' warn' : '');
+  if (isUploadedMode) {
+    syncLabel.textContent = expectedReady
+      ? (hasWarnings ? 'Dossier importé avec avertissements' : 'Dossier Fichiers Sources importé')
+      : 'Import incomplet: éléments attendus manquants';
   } else {
     syncLabel.textContent = hasWarnings
-      ? 'Données chargées avec avertissements'
-      : 'Données chargées depuis le réseau local';
+      ? 'Aucune importation active (mode secours configuré)'
+      : 'En attente d’import du dossier Fichiers Sources';
   }
 
   const items = [];
 
+  items.push({ label: 'Mode de chargement', value: status.source_mode || '—' });
+  if (status.uploaded_root_name || status.uploaded_root_path) {
+    items.push({ label: 'Dossier racine importé', value: status.uploaded_root_name || '—' });
+    items.push({ label: 'Contexte chemin racine', value: status.uploaded_root_path || '—' });
+  }
+  items.push({ label: 'REGLEMENT.txt trouvé', value: status.current_found ? 'Oui' : 'Non' });
+  items.push({ label: 'Dossier Réglements trouvé', value: status.history_found ? 'Oui' : 'Non' });
   items.push({ label: 'Source mensuelle', value: status.current_source_label || '—' });
   items.push({ label: 'Dossier historique', value: status.history_source_label || '—' });
   items.push({ label: 'Runtime backend', value: status.runtime_label || '—' });
-  items.push({ label: 'Mode de chargement', value: status.sync_mode || 'direct_read' });
-  items.push({ label: 'État synchronisation', value: status.sync_message || '—' });
+  items.push({ label: 'État chargement', value: status.sync_message || '—' });
 
   const currentDiag = status.current_diagnostic || {};
   const historyDiag = status.history_diagnostic || {};
@@ -697,20 +701,12 @@ function updateSourcePanel(status) {
   }
 
   items.push({
-    label: 'URI mensuelle configurée',
-    value: currentDiag.configured_source || '—',
-  });
-  items.push({
     label: 'Chemin mensuel résolu',
     value: currentDiag.resolved_path || '—',
   });
   items.push({
     label: 'État source mensuelle',
     value: diagSummary(currentDiag, false),
-  });
-  items.push({
-    label: 'URI historique configurée',
-    value: historyDiag.configured_source || '—',
   });
   items.push({
     label: 'Chemin historique résolu',
@@ -724,22 +720,6 @@ function updateSourcePanel(status) {
     label: 'Dossier historique existe',
     value: historyDiag.directory_exists ? 'Oui' : 'Non',
   });
-  if (status.local_cache_root) {
-    items.push({ label: 'Cache local app', value: status.local_cache_root });
-  }
-  if (status.local_current_path) {
-    items.push({ label: 'Fichier mensuel copié', value: status.local_current_path });
-  }
-  if (status.local_history_path) {
-    items.push({ label: 'Dossier historique copié', value: status.local_history_path });
-  }
-  if (syncRequired) {
-    items.push({
-      label: 'Fichiers historiques copiés',
-      value: String(status.copied_history_files || 0),
-    });
-  }
-
   if (status.coverage_start && status.coverage_end) {
     items.push({
       label: 'Période disponible',
@@ -788,6 +768,38 @@ async function refreshData() {
       await applyDateFilter();
     } else {
       await loadDefaultData();
+    }
+
+    async function importFolderFromSelection() {
+      const selected = Array.from(folderInput.files || []);
+      if (!selected.length) return;
+
+      const formData = new FormData();
+      selected.forEach(file => {
+        const relativePath = file.webkitRelativePath || file.name;
+        formData.append('files', file, relativePath);
+      });
+
+      const importBtn = document.getElementById('import-folder-btn');
+      if (importBtn) importBtn.disabled = true;
+      setLoading(true);
+      showWarning([]);
+      try {
+        const res = await fetch('/api/import-folder', { method: 'POST', body: formData });
+        const payload = await res.json();
+        if (!res.ok) {
+          throw new Error(payload.detail || "Échec de l'import du dossier.");
+        }
+        updateSourcePanel(payload);
+        await loadDefaultData();
+      } catch (error) {
+        setLoading(false);
+        showWarning([error.message || "Échec de l'import du dossier."]);
+        showEmpty("Import impossible. Vérifiez le dossier Fichiers Sources.");
+      } finally {
+        folderInput.value = '';
+        if (importBtn) importBtn.disabled = false;
+      }
     }
   } catch (e) {
     updateSourcePanel(null);
@@ -857,6 +869,8 @@ function applyDateFilter() {
 document.getElementById('apply-filter').addEventListener('click', applyDateFilter);
 document.getElementById('reset-filter').addEventListener('click', loadDefaultData);
 document.getElementById('refresh-btn').addEventListener('click', refreshData);
+document.getElementById('import-folder-btn').addEventListener('click', () => folderInput.click());
+folderInput.addEventListener('change', importFolderFromSelection);
 
 // ── Rendering ─────────────────────────────────────────────────────────────────
 function siteBadge(site) {
