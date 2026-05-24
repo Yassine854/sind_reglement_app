@@ -4,7 +4,9 @@ import json
 import logging
 import os
 import re
+import shutil
 import sys
+import tempfile
 import time
 from urllib.parse import quote, unquote, urlsplit
 
@@ -35,6 +37,10 @@ DEFAULT_HISTORY_REGLEMENTS_DIR = os.environ.get(
     "HISTORY_REGLEMENTS_DIR",
     "file://172.16.100.34/Users/chokri.jdir/Desktop/TDB_SINDBAD_Mens/R%C3%A9glements/",
 )
+WINDOWS_SYNC_CACHE_DIR = os.environ.get(
+    "WINDOWS_SYNC_CACHE_DIR",
+    os.path.join(tempfile.gettempdir(), "sind_reglement_app", "reglements_cache"),
+)
 
 # ── In-memory data cache ──────────────────────────────────────────────────────
 _cache: dict = {
@@ -49,6 +55,7 @@ _cache: dict = {
     "coverage_end": None,     # ISO date string of latest row date
     "history_file_count": 0,
     "source_diagnostics": {},
+    "sync": {},
 }
 
 CAM_SITE_MAP: dict[str, str] = {
@@ -96,6 +103,113 @@ def is_file_uri(source: str) -> bool:
 def get_file_uri_mount_root() -> str | None:
     mount_root = os.environ.get("FILE_URI_MOUNT_ROOT", "").strip()
     return mount_root or None
+
+
+def get_windows_sync_cache_dir() -> str:
+    return os.path.abspath(WINDOWS_SYNC_CACHE_DIR)
+
+
+def source_requires_windows_sync(source: str) -> bool:
+    if not source:
+        return False
+    if is_file_uri(source):
+        host = (urlsplit(source).netloc or "").strip().lower()
+        return bool(host and host not in {"localhost", "127.0.0.1", "::1"})
+    return source.startswith("\\\\") or source.startswith("//")
+
+
+def sync_windows_local_sources(current_source: str, history_source: str) -> dict:
+    cache_root = get_windows_sync_cache_dir()
+    result = {
+        "required": True,
+        "mode": "windows_local_copy",
+        "status": "idle",
+        "message": "Synchronisation locale non exécutée.",
+        "cache_root": cache_root,
+        "local_current_path": None,
+        "local_history_path": None,
+        "copied_history_files": 0,
+        "warnings": [],
+    }
+
+    if os.name != "nt":
+        result["status"] = "unsupported_runtime"
+        result["message"] = (
+            "Synchronisation locale Windows requise. "
+            "Lancez le backend sur Windows avec accès aux chemins UNC."
+        )
+        result["warnings"].append(result["message"])
+        return result
+
+    os.makedirs(cache_root, exist_ok=True)
+
+    copied_any = False
+    copied_history_files = 0
+    current_cache_dir = os.path.join(cache_root, "monthly")
+    history_cache_dir = os.path.join(cache_root, "history")
+
+    if current_source:
+        resolved_current, _ = resolve_source_path(current_source)
+        monthly_name = os.path.basename(resolved_current) or "REGLEMENT.txt"
+        local_current_path = os.path.join(current_cache_dir, monthly_name)
+        try:
+            if not os.path.isfile(resolved_current):
+                result["warnings"].append(
+                    f"Fichier mensuel introuvable pour la copie locale : {resolved_current}"
+                )
+            else:
+                os.makedirs(current_cache_dir, exist_ok=True)
+                shutil.copy2(resolved_current, local_current_path)
+                result["local_current_path"] = local_current_path
+                copied_any = True
+        except OSError as exc:
+            result["warnings"].append(
+                f"Échec copie mensuelle locale ({resolved_current}) : "
+                f"{exc.__class__.__name__}"
+            )
+
+    if history_source:
+        resolved_history, _ = resolve_source_path(history_source)
+        local_history_path = history_cache_dir
+        history_cache_tmp = os.path.join(cache_root, "history_tmp")
+        try:
+            if not os.path.isdir(resolved_history):
+                result["warnings"].append(
+                    f"Dossier historique introuvable pour la copie locale : {resolved_history}"
+                )
+            else:
+                if os.path.isdir(history_cache_tmp):
+                    shutil.rmtree(history_cache_tmp)
+                shutil.copytree(resolved_history, history_cache_tmp, dirs_exist_ok=True)
+                if os.path.isdir(local_history_path):
+                    shutil.rmtree(local_history_path)
+                os.replace(history_cache_tmp, local_history_path)
+                copied_history_files = len(
+                    [
+                        filename
+                        for filename in os.listdir(local_history_path)
+                        if filename.lower().endswith(".txt")
+                    ]
+                )
+                result["local_history_path"] = local_history_path
+                copied_any = True
+        except OSError as exc:
+            result["warnings"].append(
+                f"Échec copie historique locale ({resolved_history}) : "
+                f"{exc.__class__.__name__}"
+            )
+
+    result["copied_history_files"] = copied_history_files
+    if copied_any:
+        result["status"] = "success"
+        result["message"] = "Synchronisation locale Windows terminée."
+    elif result["warnings"]:
+        result["status"] = "failed"
+        result["message"] = "Synchronisation locale Windows échouée."
+    else:
+        result["status"] = "idle"
+        result["message"] = "Aucune source configurée pour la synchronisation locale."
+    return result
 
 
 def resolve_source_path(source: str) -> tuple[str, dict]:
@@ -457,12 +571,46 @@ def reload_cache() -> None:
     warnings: list[str] = []
     current_diagnostic = inspect_source_path(current_path, expect_directory=False)
     history_diagnostic = inspect_source_path(history_dir, expect_directory=True)
+    current_requires_sync = source_requires_windows_sync(current_path)
+    history_requires_sync = source_requires_windows_sync(history_dir)
+    sync_required = current_requires_sync or history_requires_sync
+    sync_info = {
+        "required": sync_required,
+        "mode": "windows_local_copy" if sync_required else "direct_read",
+        "status": "not_required",
+        "message": "Lecture directe des sources configurées.",
+        "cache_root": None,
+        "local_current_path": None,
+        "local_history_path": None,
+        "copied_history_files": 0,
+    }
+
+    if sync_required:
+        sync_result = sync_windows_local_sources(
+            current_path if current_requires_sync else "",
+            history_dir if history_requires_sync else "",
+        )
+        warnings.extend(sync_result["warnings"])
+        sync_info.update({
+            "mode": sync_result["mode"],
+            "status": sync_result["status"],
+            "message": sync_result["message"],
+            "cache_root": sync_result["cache_root"],
+            "local_current_path": sync_result["local_current_path"],
+            "local_history_path": sync_result["local_history_path"],
+            "copied_history_files": sync_result["copied_history_files"],
+        })
+        if current_requires_sync:
+            current_path = sync_result["local_current_path"] or ""
+        if history_requires_sync:
+            history_dir = sync_result["local_history_path"] or ""
 
     if not current_path and not history_dir:
-        warnings.append(
-            "Aucun fichier configuré. "
-            "Définissez CURRENT_REGLEMENT_FILE et HISTORY_REGLEMENTS_DIR."
-        )
+        if not sync_required:
+            warnings.append(
+                "Aucun fichier configuré. "
+                "Définissez CURRENT_REGLEMENT_FILE et HISTORY_REGLEMENTS_DIR."
+            )
         _cache.update({
             "all_rows": [],
             "current_rows": [],
@@ -478,6 +626,7 @@ def reload_cache() -> None:
                 "current": current_diagnostic,
                 "history": history_diagnostic,
             },
+            "sync": sync_info,
         })
         return
 
@@ -520,6 +669,7 @@ def reload_cache() -> None:
             "current": current_diagnostic,
             "history": history_diagnostic,
         },
+        "sync": sync_info,
     })
 
 
@@ -556,6 +706,14 @@ def get_source_status() -> dict:
         "runtime_label": f"{os.name}/{sys.platform}",
         "current_diagnostic": cache.get("source_diagnostics", {}).get("current", {}),
         "history_diagnostic": cache.get("source_diagnostics", {}).get("history", {}),
+        "sync_required": cache.get("sync", {}).get("required", False),
+        "sync_mode": cache.get("sync", {}).get("mode", "direct_read"),
+        "sync_status": cache.get("sync", {}).get("status", "not_required"),
+        "sync_message": cache.get("sync", {}).get("message"),
+        "local_cache_root": cache.get("sync", {}).get("cache_root"),
+        "local_current_path": cache.get("sync", {}).get("local_current_path"),
+        "local_history_path": cache.get("sync", {}).get("local_history_path"),
+        "copied_history_files": cache.get("sync", {}).get("copied_history_files", 0),
     }
 
 

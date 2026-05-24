@@ -13,6 +13,8 @@ Puis ouvrir **http://localhost:8000**
 ## 📋 Utilisation
 
 1. L'application lit uniquement côté backend la source du mois courant et le dossier historique configurés (chemins `file://...` par défaut).
+   - Si la source est une URI distante/UNC (`file://serveur/...`), l'application active un mode **sync locale Windows**: copie locale (équivalent `xcopy`) vers un cache applicatif puis parsing depuis ce cache.
+   - Sur runtime non-Windows, ce mode échoue proprement avec un diagnostic d'action.
 2. Les données sont chargées en mémoire au démarrage (ou via le bouton **Actualiser**) pour éviter une relecture à chaque filtre.
 3. Un bandeau en haut affiche la **période couverte** par les fichiers chargés (mois/année + dates exactes).
 4. Vous pouvez filtrer une période avec les champs **Du / Au** :
@@ -30,6 +32,7 @@ Pour tester l'application sur une autre machine ou avec des fichiers temporaires
 - `CURRENT_REGLEMENT_FILE`
 - `HISTORY_REGLEMENTS_DIR`
 - `FILE_URI_MOUNT_ROOT` (optionnel sur Linux/macOS pour mapper `file://serveur/...` vers un point de montage local)
+- `WINDOWS_SYNC_CACHE_DIR` (optionnel, dossier de cache local utilisé par la sync locale Windows)
 
 ## 🗺️ Sites et CAMs
 
