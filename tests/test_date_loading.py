@@ -291,6 +291,38 @@ class ReglementDateLoadingTests(unittest.TestCase):
         self.assertTrue(status["warnings"])
         self.assertTrue(any("Réglements" in warning for warning in status["warnings"]))
 
+    def test_folder_import_ignores_non_reglement_files(self):
+        monthly_line = (
+            "CESP-26-05-0000100;26-99-CAM39-00415;20260501;20260501;BJSSE;ESP;CLS03581;;;FAC-BJS-26-00414;71.9\n"
+        )
+        history_line = (
+            "CTRT-26-04-0000078;;20260427;20260831;TUN;TRT;CLT06449;;BT;FAC-TUN-26-13006;1538.2\n"
+        )
+        files = [
+            UploadFile(
+                filename="Fichiers Sources/REGLEMENT.txt",
+                file=BytesIO(monthly_line.encode("utf-8")),
+            ),
+            UploadFile(
+                filename="Fichiers Sources/Réglements/REGLEMENT_historique.txt",
+                file=BytesIO(history_line.encode("utf-8")),
+            ),
+            UploadFile(
+                filename="Fichiers Sources/notes.txt",
+                file=BytesIO("Ne doit pas être importé".encode("utf-8")),
+            ),
+            UploadFile(
+                filename="Fichiers Sources/Réglements/notes_hors_scope.txt",
+                file=BytesIO("Ne doit pas être importé".encode("utf-8")),
+            ),
+        ]
+
+        response = asyncio.run(import_folder(files))
+        status = json.loads(response.body)
+
+        self.assertEqual(status["source_file_count"], 2)
+        self.assertEqual(status["history_file_count"], 1)
+
     def test_filter_endpoint_alias_works_with_start_and_end(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             base = Path(tmpdir)

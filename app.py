@@ -111,23 +111,26 @@ def is_reglements_dir_name(name: str) -> bool:
     return normalize_token(name) == "reglements"
 
 
+def is_reglement_text_filename(name: str) -> bool:
+    base, ext = os.path.splitext(name or "")
+    return ext.casefold() == ".txt" and "reglement" in normalize_token(base)
+
+
 def discover_uploaded_sources(root_dir: str) -> dict:
     current_file: str | None = None
     history_dir: str | None = None
 
-    for dirpath, dirnames, filenames in os.walk(root_dir):
-        dirnames.sort(key=str.casefold)
-        filenames.sort(key=str.casefold)
-        if history_dir is None:
-            for dirname in dirnames:
-                if is_reglements_dir_name(dirname):
-                    history_dir = os.path.join(dirpath, dirname)
-                    break
-        if current_file is None:
-            for filename in filenames:
-                if filename.casefold() == "reglement.txt":
-                    current_file = os.path.join(dirpath, filename)
-                    break
+    try:
+        root_entries = sorted(os.listdir(root_dir), key=str.casefold)
+    except OSError:
+        root_entries = []
+
+    for name in root_entries:
+        candidate = os.path.join(root_dir, name)
+        if not current_file and os.path.isfile(candidate) and name.casefold() == "reglement.txt":
+            current_file = candidate
+        if not history_dir and os.path.isdir(candidate) and is_reglements_dir_name(name):
+            history_dir = candidate
         if current_file and history_dir:
             break
 
@@ -454,7 +457,11 @@ def list_reglement_files(directory: str) -> tuple[list[str], list[str]]:
 
     try:
         filenames = sorted(
-            [filename for filename in os.listdir(lookup_dir) if filename.lower().endswith(".txt")],
+            [
+                filename
+                for filename in os.listdir(lookup_dir)
+                if is_reglement_text_filename(filename)
+            ],
             key=lambda filename: filename.lower(),
         )
     except PermissionError:
@@ -993,6 +1000,15 @@ async def import_folder(files: list[UploadFile] = File(...)):
         else:
             relative_segments = segments
         if not relative_segments:
+            await upload.close()
+            continue
+
+        filename = relative_segments[-1]
+        parent_segments = relative_segments[:-1]
+        in_reglements_dir = any(is_reglements_dir_name(segment) for segment in parent_segments)
+        is_monthly_file = filename.casefold() == "reglement.txt"
+        is_history_file = in_reglements_dir and is_reglement_text_filename(filename)
+        if not (is_monthly_file or is_history_file):
             await upload.close()
             continue
 

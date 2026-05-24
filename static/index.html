@@ -99,30 +99,51 @@
 
   .upload-btn {
     display: inline-block;
-    margin-top: 1.25rem;
-    padding: 8px 20px;
-    background: var(--teal);
+    padding: 10px 20px;
+    background: linear-gradient(135deg, #1D9E75 0%, #167b5c 100%);
     color: #fff;
     border-radius: var(--radius-sm);
     font-size: 13px;
-    font-weight: 500;
+    font-weight: 600;
     cursor: pointer;
     border: none;
-    transition: opacity 0.15s;
+    transition: transform 0.15s, box-shadow 0.15s, opacity 0.15s;
+    box-shadow: 0 10px 22px rgba(8, 80, 65, 0.18);
   }
-  .upload-btn:hover { opacity: 0.88; }
+  .upload-btn:hover { opacity: 0.92; transform: translateY(-1px); }
 
+  .import-card,
   .filter-card {
     background: var(--surface);
     border: 0.5px solid var(--border);
     border-radius: var(--radius);
-    padding: 1rem 1.25rem;
+    padding: 1.1rem 1.25rem;
     margin-bottom: 1rem;
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: 1rem;
     flex-wrap: wrap;
+  }
+  .import-card {
+    background:
+      radial-gradient(circle at top right, rgba(29, 158, 117, 0.14), transparent 45%),
+      var(--surface);
+  }
+  .import-title {
+    font-size: 18px;
+    font-weight: 700;
+    margin-bottom: 4px;
+    color: var(--text);
+  }
+  .import-sub {
+    color: var(--text2);
+    line-height: 1.45;
+  }
+  .import-summary {
+    margin-top: 10px;
+    color: var(--text2);
+    font-size: 12px;
   }
   .filter-form {
     display: flex;
@@ -372,51 +393,21 @@
   }
   .source-info-grid {
     display: flex;
-    gap: 20px;
+    gap: 8px;
     flex-wrap: wrap;
   }
   .source-info-item {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    min-width: 0;
-  }
-  .source-info-label {
-    font-size: 10px;
-    text-transform: uppercase;
-    letter-spacing: .06em;
-    color: var(--text3);
-    font-weight: 600;
-  }
-  .source-info-value {
-    font-size: 13px;
-    color: var(--text2);
-    font-weight: 500;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    max-width: 260px;
-  }
-  .refresh-btn {
     display: inline-flex;
     align-items: center;
-    gap: 6px;
-    padding: 7px 14px;
-    background: var(--surface2);
-    color: var(--text);
-    border-radius: var(--radius-sm);
+    padding: 4px 10px;
+    border-radius: 999px;
     font-size: 12px;
-    font-weight: 500;
-    cursor: pointer;
-    border: 0.5px solid var(--border2);
-    transition: background 0.15s;
-    white-space: nowrap;
-    flex-shrink: 0;
-    align-self: center;
+    font-weight: 600;
+    background: var(--surface2);
+    color: var(--text2);
   }
-  .refresh-btn:hover { background: var(--teal-light); color: var(--teal-dark); border-color: var(--teal); }
-  .refresh-btn svg { width: 14px; height: 14px; stroke: currentColor; fill: none; stroke-width: 2; }
-  .refresh-btn.spinning svg { animation: spin .7s linear infinite; }
+  .source-info-item.ok { background: var(--teal-light); color: var(--teal-dark); }
+  .source-info-item.warn { background: var(--amber-light); color: var(--amber); }
 
   /* ── Responsive ── */
   @media (max-width: 700px) {
@@ -445,6 +436,18 @@
 
 <main>
 
+  <div class="import-card">
+    <div>
+      <div class="import-title">Importer Fichiers Sources</div>
+      <div class="import-sub">Importez votre dossier pour charger automatiquement <strong>REGLEMENT.txt</strong> et les fichiers du dossier <strong>Réglements</strong>. Les autres fichiers sont ignorés.</div>
+      <div class="import-summary">Un nouvel import remplace simplement les données précédentes.</div>
+    </div>
+    <div>
+      <input type="file" id="folder-input" webkitdirectory directory multiple style="display:none">
+      <button class="upload-btn" id="import-folder-btn" type="button">Importer le dossier</button>
+    </div>
+  </div>
+
   <div id="source-status" class="source-status-panel">
     <div class="source-status-left">
       <div class="source-sync-row">
@@ -453,10 +456,6 @@
       </div>
       <div class="source-info-grid" id="source-info-grid"></div>
     </div>
-    <button class="refresh-btn" id="refresh-btn" type="button">
-      <svg viewBox="0 0 24 24"><path d="M4 12a8 8 0 018-8 8 8 0 015.66 2.34L20 9M20 3v6h-6M20 12a8 8 0 01-8 8 8 8 0 01-5.66-2.34L4 15M4 21v-6h6"/></svg>
-      Actualiser
-    </button>
   </div>
 
   <div class="filter-card">
@@ -465,8 +464,6 @@
       <div class="upload-sub">Sélectionnez une plage de dates pour explorer les règlements historiques ou du mois en cours.</div>
     </div>
     <div class="filter-form">
-      <input type="file" id="folder-input" webkitdirectory directory multiple style="display:none">
-      <button class="upload-btn" id="import-folder-btn" type="button">Importer Fichiers Sources</button>
       <label class="filter-field">
         <span>Du</span>
         <input type="date" id="start-date">
@@ -651,95 +648,47 @@ function updateSourcePanel(status) {
     sourceInfoGrid.innerHTML = '';
     return;
   }
-  if (!status.loaded) {
-    syncDot.className = 'sync-dot warn';
-    syncLabel.textContent = 'Données non chargées';
-    sourceInfoGrid.innerHTML = '';
-    return;
-  }
-
   const hasWarnings = status.warnings && status.warnings.length > 0;
   const isUploadedMode = status.source_mode === 'uploaded_folder';
-  const expectedReady = !!status.current_found && !!status.history_found;
-  syncDot.className = 'sync-dot' + ((hasWarnings || !expectedReady) ? ' warn' : '');
-  if (isUploadedMode) {
-    syncLabel.textContent = expectedReady
-      ? (hasWarnings ? 'Dossier importé avec avertissements' : 'Dossier Fichiers Sources importé')
-      : 'Import incomplet: éléments attendus manquants';
+  const hasCurrent = !!status.current_found;
+  const hasHistory = !!status.history_found;
+  const isReady = isUploadedMode && hasCurrent && hasHistory;
+
+  syncDot.className = 'sync-dot' + ((isReady && !hasWarnings) ? '' : ' warn');
+  if (!status.loaded || !isUploadedMode) {
+    syncDot.className = 'sync-dot offline';
+    syncLabel.textContent = 'Importez le dossier Fichiers Sources pour commencer.';
+  } else if (isReady && !hasWarnings) {
+    syncLabel.textContent = 'Import réussi. Les règlements sont prêts.';
+  } else if (isReady) {
+    syncLabel.textContent = 'Import terminé avec des vérifications à faire.';
   } else {
-    syncLabel.textContent = hasWarnings
-      ? 'Aucune importation active (mode secours configuré)'
-      : 'En attente d’import du dossier Fichiers Sources';
+    syncLabel.textContent = 'Import incomplet: REGLEMENT.txt ou Réglements est manquant.';
   }
 
-  const items = [];
-
-  items.push({ label: 'Mode de chargement', value: status.source_mode || '—' });
-  if (status.uploaded_root_name || status.uploaded_root_path) {
-    items.push({ label: 'Dossier racine importé', value: status.uploaded_root_name || '—' });
-    items.push({ label: 'Contexte chemin racine', value: status.uploaded_root_path || '—' });
+  const tags = [];
+  if (status.uploaded_root_name) {
+    tags.push({ text: status.uploaded_root_name, kind: 'ok' });
   }
-  items.push({ label: 'REGLEMENT.txt trouvé', value: status.current_found ? 'Oui' : 'Non' });
-  items.push({ label: 'Dossier Réglements trouvé', value: status.history_found ? 'Oui' : 'Non' });
-  items.push({ label: 'Source mensuelle', value: status.current_source_label || '—' });
-  items.push({ label: 'Dossier historique', value: status.history_source_label || '—' });
-  items.push({ label: 'Runtime backend', value: status.runtime_label || '—' });
-  items.push({ label: 'État chargement', value: status.sync_message || '—' });
-
-  const currentDiag = status.current_diagnostic || {};
-  const historyDiag = status.history_diagnostic || {};
-
-  function diagSummary(diag, isDir) {
-    if (!diag || !diag.configured_source) return 'Non configuré';
-    if (diag.error_kind === 'access_denied') return 'Accès refusé';
-    if (diag.error_kind === 'missing') return isDir ? 'Dossier introuvable' : 'Fichier introuvable';
-    if (diag.error_kind === 'not_directory') return 'Chemin configuré non dossier';
-    if (diag.error_kind === 'is_directory') return 'Chemin configuré est un dossier';
-    if (diag.error_kind === 'not_file') return 'Chemin configuré non fichier';
-    if (diag.error_kind === 'os_error') return 'Erreur système';
-    return 'Accessible';
+  tags.push({
+    text: hasCurrent ? 'REGLEMENT.txt détecté' : 'REGLEMENT.txt manquant',
+    kind: hasCurrent ? 'ok' : 'warn'
+  });
+  tags.push({
+    text: hasHistory ? 'Réglements détecté' : 'Réglements manquant',
+    kind: hasHistory ? 'ok' : 'warn'
+  });
+  if (status.source_file_count) {
+    tags.push({ text: status.source_file_count + ' fichier(s) règlement chargé(s)', kind: 'ok' });
   }
-
-  items.push({
-    label: 'Chemin mensuel résolu',
-    value: currentDiag.resolved_path || '—',
-  });
-  items.push({
-    label: 'État source mensuelle',
-    value: diagSummary(currentDiag, false),
-  });
-  items.push({
-    label: 'Chemin historique résolu',
-    value: historyDiag.resolved_path || '—',
-  });
-  items.push({
-    label: 'État dossier historique',
-    value: diagSummary(historyDiag, true),
-  });
-  items.push({
-    label: 'Dossier historique existe',
-    value: historyDiag.directory_exists ? 'Oui' : 'Non',
-  });
   if (status.coverage_start && status.coverage_end) {
-    items.push({
-      label: 'Période disponible',
-      value: formatExactDate(status.coverage_start) + ' → ' + formatExactDate(status.coverage_end),
+    tags.push({
+      text: 'Période: ' + formatExactDate(status.coverage_start) + ' → ' + formatExactDate(status.coverage_end),
+      kind: 'ok',
     });
   }
-  items.push({
-    label: 'Fichiers chargés',
-    value: (status.source_file_count || 0) + ' fichier(s) dont ' + (status.history_file_count || 0) + ' historique(s)',
-  });
-  if (status.loaded_at) {
-    items.push({ label: 'Dernière sync', value: formatDateTime(status.loaded_at) });
-  }
-
-  sourceInfoGrid.innerHTML = items.map(item =>
-    '<div class="source-info-item">'
-    + '<span class="source-info-label">' + item.label + '</span>'
-    + '<span class="source-info-value" title="' + escapeHtml(item.value) + '">'
-    + escapeHtml(item.value) + '</span>'
-    + '</div>'
+  sourceInfoGrid.innerHTML = tags.map(tag =>
+    '<span class="source-info-item ' + tag.kind + '">' + escapeHtml(tag.text) + '</span>'
   ).join('');
 }
 
@@ -755,56 +704,35 @@ async function loadSourceStatus() {
   }
 }
 
-async function refreshData() {
-  const btn = document.getElementById('refresh-btn');
-  if (btn) btn.classList.add('spinning');
+async function importFolderFromSelection() {
+  const selected = Array.from(folderInput.files || []);
+  if (!selected.length) return;
+
+  const formData = new FormData();
+  selected.forEach(file => {
+    const relativePath = file.webkitRelativePath || file.name;
+    formData.append('files', file, relativePath);
+  });
+
+  const importBtn = document.getElementById('import-folder-btn');
+  if (importBtn) importBtn.disabled = true;
+  setLoading(true);
+  showWarning([]);
   try {
-    const res = await fetch('/api/refresh', { method: 'POST' });
-    const status = await res.json();
-    updateSourcePanel(status);
-
-    // Reload the current view after data refresh.
-    if (startDateInput.value && endDateInput.value) {
-      await applyDateFilter();
-    } else {
-      await loadDefaultData();
+    const res = await fetch('/api/import-folder', { method: 'POST', body: formData });
+    const payload = await res.json();
+    if (!res.ok) {
+      throw new Error(payload.detail || "Échec de l'import du dossier.");
     }
-
-    async function importFolderFromSelection() {
-      const selected = Array.from(folderInput.files || []);
-      if (!selected.length) return;
-
-      const formData = new FormData();
-      selected.forEach(file => {
-        const relativePath = file.webkitRelativePath || file.name;
-        formData.append('files', file, relativePath);
-      });
-
-      const importBtn = document.getElementById('import-folder-btn');
-      if (importBtn) importBtn.disabled = true;
-      setLoading(true);
-      showWarning([]);
-      try {
-        const res = await fetch('/api/import-folder', { method: 'POST', body: formData });
-        const payload = await res.json();
-        if (!res.ok) {
-          throw new Error(payload.detail || "Échec de l'import du dossier.");
-        }
-        updateSourcePanel(payload);
-        await loadDefaultData();
-      } catch (error) {
-        setLoading(false);
-        showWarning([error.message || "Échec de l'import du dossier."]);
-        showEmpty("Import impossible. Vérifiez le dossier Fichiers Sources.");
-      } finally {
-        folderInput.value = '';
-        if (importBtn) importBtn.disabled = false;
-      }
-    }
-  } catch (e) {
-    updateSourcePanel(null);
+    updateSourcePanel(payload);
+    await loadDefaultData();
+  } catch (error) {
+    setLoading(false);
+    showWarning([error.message || "Échec de l'import du dossier."]);
+    showEmpty("Import impossible. Vérifiez le dossier Fichiers Sources.");
   } finally {
-    if (btn) btn.classList.remove('spinning');
+    folderInput.value = '';
+    if (importBtn) importBtn.disabled = false;
   }
 }
 
@@ -868,7 +796,6 @@ function applyDateFilter() {
 
 document.getElementById('apply-filter').addEventListener('click', applyDateFilter);
 document.getElementById('reset-filter').addEventListener('click', loadDefaultData);
-document.getElementById('refresh-btn').addEventListener('click', refreshData);
 document.getElementById('import-folder-btn').addEventListener('click', () => folderInput.click());
 folderInput.addEventListener('change', importFolderFromSelection);
 
