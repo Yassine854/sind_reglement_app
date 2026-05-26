@@ -49,12 +49,21 @@ _cache: dict = {
     "current_rows": [],      # Rows from the current-month file only (for default view)
     "source_files": [],      # All loaded source file paths
     "current_source_files": [],  # Only the current-month source file(s)
+    "article_lookup": {},
+    "all_facture_lines": [],
+    "all_big_factures": [],
+    "current_big_factures": [],
+    "facture_source_files": [],
+    "current_facture_source_files": [],
     "warnings": [],          # All warnings (history + current)
     "current_warnings": [],  # Warnings related to the current-month file only
     "loaded_at": None,        # Unix timestamp of last successful load
     "coverage_start": None,   # ISO date string of earliest row date
     "coverage_end": None,     # ISO date string of latest row date
     "history_file_count": 0,
+    "facture_coverage_start": None,
+    "facture_coverage_end": None,
+    "facture_history_file_count": 0,
     "source_diagnostics": {},
     "sync": {},
     "import_context": {},
@@ -116,9 +125,22 @@ def is_reglement_text_filename(name: str) -> bool:
     return ext.casefold() == ".txt" and "reglement" in normalize_token(base)
 
 
+def is_factures_dir_name(name: str) -> bool:
+    return normalize_token(name) == "factures"
+
+
+def is_named_source_file(name: str, expected_name: str) -> bool:
+    base, ext = os.path.splitext(name or "")
+    normalized = normalize_token(base or name)
+    return normalized == normalize_token(expected_name) and ext.casefold() in {"", ".txt", ".csv"}
+
+
 def discover_uploaded_sources(root_dir: str) -> dict:
     current_file: str | None = None
     history_dir: str | None = None
+    article_file: str | None = None
+    current_facture_file: str | None = None
+    factures_dir: str | None = None
 
     try:
         root_entries = sorted(os.listdir(root_dir), key=str.casefold)
@@ -131,7 +153,13 @@ def discover_uploaded_sources(root_dir: str) -> dict:
             current_file = candidate
         if not history_dir and os.path.isdir(candidate) and is_reglements_dir_name(name):
             history_dir = candidate
-        if current_file and history_dir:
+        if not article_file and os.path.isfile(candidate) and is_named_source_file(name, "ARTICLE"):
+            article_file = candidate
+        if not current_facture_file and os.path.isfile(candidate) and is_named_source_file(name, "FACTURE"):
+            current_facture_file = candidate
+        if not factures_dir and os.path.isdir(candidate) and is_factures_dir_name(name):
+            factures_dir = candidate
+        if current_file and history_dir and article_file and current_facture_file and factures_dir:
             break
 
     warnings: list[str] = []
@@ -145,8 +173,14 @@ def discover_uploaded_sources(root_dir: str) -> dict:
         "root_name": os.path.basename(os.path.normpath(root_dir)) or "Fichiers Sources",
         "current_path": current_file or "",
         "history_path": history_dir or "",
+        "article_path": article_file or "",
+        "facture_path": current_facture_file or "",
+        "factures_path": factures_dir or "",
         "current_found": bool(current_file),
         "history_found": bool(history_dir),
+        "article_found": bool(article_file),
+        "facture_found": bool(current_facture_file),
+        "factures_found": bool(factures_dir),
         "warnings": warnings,
     }
 
@@ -510,6 +544,275 @@ def load_rows_from_paths(paths: list[str]) -> tuple[list[dict], list[str], list[
     return rows, source_files, warnings
 
 
+def parse_article_lines(text: str) -> dict[str, str]:
+    articles: dict[str, str] = {}
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        parts = [part.strip() for part in line.split(";")]
+        if len(parts) < 2 or not parts[0]:
+            continue
+        articles[parts[0]] = parts[1] or parts[0]
+    return articles
+
+
+def parse_facture_lines(text: str, article_lookup: dict[str, str] | None = None) -> list[dict]:
+    lookup = article_lookup or {}
+    results: list[dict] = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        parts = [part.strip() for part in line.split(";")]
+        if len(parts) < 15:
+            continue
+
+        facture_number = parts[0]
+        facture_date = parse_reglement_date(parts[2])
+        cam_value = parts[5] or ""
+        cam_match = re.search(r"(CAM\d+)", cam_value) or re.search(r"(CAM\d+)", parts[1])
+        cam = cam_match.group(1) if cam_match else None
+        site = get_site(cam) if cam else normalize_site(parts[4])
+        article_code = parts[7]
+
+        try:
+            package_quantity = float((parts[9] or "0").replace(",", "."))
+            quantity = float((parts[10] or "0").replace(",", "."))
+            amount = float((parts[-2] or "0").replace(",", "."))
+        except ValueError:
+            continue
+
+        results.append(
+            {
+                "facture_number": facture_number,
+                "reference": parts[1],
+                "facture_date": facture_date,
+                "facture_date_iso": facture_date.isoformat() if facture_date else None,
+                "document_type": parts[3],
+                "raw_site": parts[4],
+                "site": site,
+                "cam": cam,
+                "client_code": parts[6],
+                "article_code": article_code,
+                "article_name": lookup.get(article_code, article_code),
+                "unit": parts[8],
+                "package_quantity": package_quantity,
+                "quantity": quantity,
+                "amount": amount,
+                "raw": line,
+            }
+        )
+    return results
+
+
+def load_article_lookup(path: str) -> tuple[dict[str, str], list[str]]:
+    if not path:
+        return {}, []
+    text, error = read_text_file(path)
+    if error:
+        return {}, [error]
+    return parse_article_lines(text or ""), []
+
+
+def list_plain_files(directory: str) -> tuple[list[str], list[str]]:
+    lookup_dir = file_uri_to_fs_path(directory) if is_file_uri(directory) else directory
+
+    if not os.path.exists(lookup_dir):
+        return [], [
+            f"Dossier introuvable : {lookup_dir} "
+            f"(source: {directory}, runtime: {os.name}/{sys.platform})"
+        ]
+    if not os.path.isdir(lookup_dir):
+        return [], [
+            f"Chemin invalide (pas un dossier) : {lookup_dir} "
+            f"(source: {directory}, runtime: {os.name}/{sys.platform})"
+        ]
+
+    try:
+        filenames = sorted(
+            [
+                filename
+                for filename in os.listdir(lookup_dir)
+                if os.path.isfile(os.path.join(lookup_dir, filename)) and not filename.startswith(".")
+            ],
+            key=lambda filename: filename.lower(),
+        )
+    except PermissionError:
+        return [], [
+            f"Accès refusé au dossier : {lookup_dir} "
+            f"(source: {directory}, runtime: {os.name}/{sys.platform})"
+        ]
+    except OSError as exc:
+        return [], [
+            f"Impossible de lire le dossier : {lookup_dir} "
+            f"(source: {directory}, runtime: {os.name}/{sys.platform}, erreur: {exc.__class__.__name__})"
+        ]
+
+    if is_file_uri(directory):
+        base_uri = directory if directory.endswith("/") else f"{directory}/"
+        return [f"{base_uri}{quote(filename)}" for filename in filenames], []
+    return [os.path.join(directory, filename) for filename in filenames], []
+
+
+def load_facture_lines_from_paths(
+    paths: list[str], article_lookup: dict[str, str]
+) -> tuple[list[dict], list[str], list[str]]:
+    rows: list[dict] = []
+    source_files: list[str] = []
+    warnings: list[str] = []
+
+    for path in unique_paths(paths):
+        text, error = read_text_file(path)
+        if error:
+            warnings.append(error)
+            continue
+        source_files.append(path)
+        rows.extend(parse_facture_lines(text or "", article_lookup))
+
+    return rows, source_files, warnings
+
+
+def get_facture_bounds(rows: list[dict]) -> tuple[date | None, date | None]:
+    dates = [r.get("facture_date") for r in rows if isinstance(r.get("facture_date"), date)]
+    if not dates:
+        return None, None
+    return min(dates), max(dates)
+
+
+def build_big_factures(rows: list[dict]) -> list[dict]:
+    grouped: dict[str, list[dict]] = defaultdict(list)
+    for row in rows:
+        facture_number = row.get("facture_number")
+        if facture_number:
+            grouped[facture_number].append(row)
+
+    big_factures: list[dict] = []
+    for facture_number, facture_rows in grouped.items():
+        first = facture_rows[0]
+        total_amount = round(sum(line.get("amount", 0.0) for line in facture_rows), 3)
+        total_quantity = round(sum(line.get("quantity", 0.0) for line in facture_rows), 3)
+        big_factures.append(
+            {
+                "facture_number": facture_number,
+                "facture_date": first.get("facture_date"),
+                "facture_date_iso": first.get("facture_date_iso"),
+                "site": first.get("site") or get_site(first.get("cam")),
+                "cam": first.get("cam"),
+                "client_code": first.get("client_code"),
+                "reference": first.get("reference"),
+                "line_count": len(facture_rows),
+                "total_amount": total_amount,
+                "total_quantity": total_quantity,
+                "articles_count": len({line.get("article_code") for line in facture_rows if line.get("article_code")}),
+                "lines": facture_rows,
+            }
+        )
+
+    return sorted(
+        big_factures,
+        key=lambda item: (
+            item.get("facture_date") or date.min,
+            item.get("facture_number") or "",
+        ),
+        reverse=True,
+    )
+
+
+def filter_big_factures_by_date(
+    rows: list[dict], start_date: date | None, end_date: date | None
+) -> list[dict]:
+    filtered: list[dict] = []
+    for row in rows:
+        facture_date = row.get("facture_date")
+        if facture_date is None:
+            continue
+        if start_date is not None and facture_date < start_date:
+            continue
+        if end_date is not None and facture_date > end_date:
+            continue
+        filtered.append(row)
+    return filtered
+
+
+def build_cam_facture_payload(
+    cam: str,
+    factures: list[dict],
+    *,
+    mode: str,
+    source_files: list[str] | None = None,
+    date_range: dict[str, str] | None = None,
+    warnings: list[str] | None = None,
+) -> dict:
+    cam_factures = [facture for facture in factures if facture.get("cam") == cam]
+    cam_factures.sort(
+        key=lambda item: (item.get("facture_date") or date.min, item.get("facture_number") or ""),
+        reverse=True,
+    )
+
+    article_acc: dict[str, dict] = defaultdict(
+        lambda: {"article_name": "", "quantity": 0.0, "amount": 0.0, "line_count": 0}
+    )
+    for facture in cam_factures:
+        for line in facture.get("lines", []):
+            article_code = line.get("article_code") or "—"
+            article = article_acc[article_code]
+            article["article_name"] = line.get("article_name") or article_code
+            article["quantity"] += line.get("quantity", 0.0)
+            article["amount"] += line.get("amount", 0.0)
+            article["line_count"] += 1
+
+    top_articles = sorted(
+        [
+            {
+                "article_code": code,
+                "article_name": values["article_name"],
+                "quantity": round(values["quantity"], 3),
+                "amount": round(values["amount"], 3),
+                "line_count": values["line_count"],
+            }
+            for code, values in article_acc.items()
+        ],
+        key=lambda item: (item["amount"], item["quantity"]),
+        reverse=True,
+    )
+
+    factures_payload = [
+        {
+            "facture_number": facture["facture_number"],
+            "facture_date_iso": facture["facture_date_iso"],
+            "client_code": facture["client_code"],
+            "reference": facture["reference"],
+            "line_count": facture["line_count"],
+            "articles_count": facture["articles_count"],
+            "total_quantity": facture["total_quantity"],
+            "total_amount": facture["total_amount"],
+            "top_articles_preview": [
+                line.get("article_name") or line.get("article_code")
+                for line in sorted(
+                    facture.get("lines", []),
+                    key=lambda item: item.get("amount", 0.0),
+                    reverse=True,
+                )[:3]
+            ],
+        }
+        for facture in cam_factures
+    ]
+
+    return {
+        "cam": cam,
+        "site": get_site(cam),
+        "mode": mode,
+        "date_range": date_range,
+        "source_files": source_files or [],
+        "warnings": warnings or [],
+        "nb_factures": len(cam_factures),
+        "total_vente": round(sum(facture["total_amount"] for facture in cam_factures), 3),
+        "top_articles": top_articles[:8],
+        "factures": factures_payload,
+    }
+
+
 
 def filter_rows_by_date(rows: list[dict], start_date: date | None, end_date: date | None) -> list[dict]:
     filtered: list[dict] = []
@@ -611,6 +914,9 @@ def reload_cache() -> None:
 
     current_path = (import_context.get("current_path") if using_uploaded_folder else DEFAULT_CURRENT_REGLEMENT_FILE) or ""
     history_dir = (import_context.get("history_path") if using_uploaded_folder else DEFAULT_HISTORY_REGLEMENTS_DIR) or ""
+    article_path = (import_context.get("article_path") if using_uploaded_folder else "") or ""
+    facture_path = (import_context.get("facture_path") if using_uploaded_folder else "") or ""
+    factures_dir = (import_context.get("factures_path") if using_uploaded_folder else "") or ""
     warnings: list[str] = []
     if using_uploaded_folder:
         warnings.extend(import_context.get("warnings", []))
@@ -646,12 +952,21 @@ def reload_cache() -> None:
             "current_rows": [],
             "source_files": [],
             "current_source_files": [],
+            "article_lookup": {},
+            "all_facture_lines": [],
+            "all_big_factures": [],
+            "current_big_factures": [],
+            "facture_source_files": [],
+            "current_facture_source_files": [],
             "warnings": warnings,
             "current_warnings": [],
             "loaded_at": time.time(),
             "coverage_start": None,
             "coverage_end": None,
             "history_file_count": 0,
+            "facture_coverage_start": None,
+            "facture_coverage_end": None,
+            "facture_history_file_count": 0,
             "source_diagnostics": {
                 "current": current_diagnostic,
                 "history": history_diagnostic,
@@ -683,18 +998,60 @@ def reload_cache() -> None:
     all_rows = history_rows + current_rows
     all_sources = history_sources + current_sources
     coverage_start, coverage_end = get_rows_bounds(all_rows)
+    article_lookup, article_warnings = load_article_lookup(article_path)
+    warnings.extend(article_warnings)
+
+    facture_history_files: list[str] = []
+    if factures_dir:
+        facture_history_files, facture_dir_warnings = list_plain_files(factures_dir)
+        warnings.extend(facture_dir_warnings)
+
+    facture_current_rows: list[dict] = []
+    facture_current_sources: list[str] = []
+    facture_current_warnings: list[str] = []
+    if facture_path:
+        (
+            facture_current_rows,
+            facture_current_sources,
+            facture_current_warnings,
+        ) = load_facture_lines_from_paths([facture_path], article_lookup)
+        warnings.extend(facture_current_warnings)
+
+    facture_history_rows: list[dict] = []
+    facture_history_sources: list[str] = []
+    if facture_history_files:
+        (
+            facture_history_rows,
+            facture_history_sources,
+            facture_history_warnings,
+        ) = load_facture_lines_from_paths(facture_history_files, article_lookup)
+        warnings.extend(facture_history_warnings)
+
+    all_facture_lines = facture_history_rows + facture_current_rows
+    current_big_factures = build_big_factures(facture_current_rows)
+    all_big_factures = build_big_factures(all_facture_lines)
+    facture_coverage_start, facture_coverage_end = get_facture_bounds(all_facture_lines)
 
     _cache.update({
         "all_rows": all_rows,
         "current_rows": current_rows,
         "source_files": all_sources,
         "current_source_files": current_sources,
+        "article_lookup": article_lookup,
+        "all_facture_lines": all_facture_lines,
+        "all_big_factures": all_big_factures,
+        "current_big_factures": current_big_factures,
+        "facture_source_files": facture_history_sources + facture_current_sources,
+        "current_facture_source_files": facture_current_sources,
         "warnings": warnings,
         "current_warnings": cur_warnings if current_path else [],
         "loaded_at": time.time(),
         "coverage_start": date_to_iso(coverage_start),
         "coverage_end": date_to_iso(coverage_end),
         "history_file_count": len(history_files),
+        "facture_coverage_start": date_to_iso(facture_coverage_start),
+        "facture_coverage_end": date_to_iso(facture_coverage_end),
+        "facture_history_file_count": len(facture_history_files),
         "source_diagnostics": {
             "current": current_diagnostic,
             "history": history_diagnostic,
@@ -718,6 +1075,9 @@ def get_source_status() -> dict:
     using_uploaded_folder = bool(import_context.get("active"))
     current_source = import_context.get("current_path") if using_uploaded_folder else DEFAULT_CURRENT_REGLEMENT_FILE
     history_source = import_context.get("history_path") if using_uploaded_folder else DEFAULT_HISTORY_REGLEMENTS_DIR
+    article_source = import_context.get("article_path") if using_uploaded_folder else ""
+    facture_source = import_context.get("facture_path") if using_uploaded_folder else ""
+    factures_source = import_context.get("factures_path") if using_uploaded_folder else ""
     return {
         "loaded": loaded_at is not None,
         "loaded_at": loaded_at,
@@ -725,7 +1085,10 @@ def get_source_status() -> dict:
         "coverage_end": cache["coverage_end"],
         "source_file_count": len(cache["source_files"]),
         "history_file_count": cache["history_file_count"],
+        "facture_source_file_count": len(cache.get("facture_source_files", [])),
+        "facture_history_file_count": cache.get("facture_history_file_count", 0),
         "has_data": bool(cache["all_rows"]),
+        "has_facture_data": bool(cache.get("all_big_factures")),
         "warnings": cache["warnings"],
         "current_source_label": (
             get_source_label(current_source)
@@ -742,8 +1105,16 @@ def get_source_status() -> dict:
         "uploaded_root_path": import_context.get("root_path"),
         "expected_current_name": "REGLEMENT.txt",
         "expected_history_name": "Réglements",
+        "expected_article_name": "ARTICLE",
+        "expected_facture_name": "FACTURE",
+        "expected_factures_name": "Factures",
         "current_found": import_context.get("current_found", bool(current_source)),
         "history_found": import_context.get("history_found", bool(history_source)),
+        "article_found": import_context.get("article_found", bool(article_source)),
+        "facture_found": import_context.get("facture_found", bool(facture_source)),
+        "factures_found": import_context.get("factures_found", bool(factures_source)),
+        "facture_coverage_start": cache.get("facture_coverage_start"),
+        "facture_coverage_end": cache.get("facture_coverage_end"),
         "runtime_label": f"{os.name}/{sys.platform}",
         "current_diagnostic": cache.get("source_diagnostics", {}).get("current", {}),
         "history_diagnostic": cache.get("source_diagnostics", {}).get("history", {}),
@@ -959,6 +1330,60 @@ async def get_dashboard_for_filter(
     return await get_dashboard_for_range(start_date=start_date, end_date=end_date)
 
 
+@app.get("/api/cam/{cam_code}")
+async def get_cam_facture_detail(
+    cam_code: str,
+    start_date: str | None = Query(None, description="Date de début au format AAAA-MM-JJ"),
+    end_date: str | None = Query(None, description="Date de fin au format AAAA-MM-JJ"),
+):
+    cam = cam_code.strip().upper()
+    cache = get_or_reload_cache()
+    warnings = list(cache["warnings"])
+
+    if (start_date and not end_date) or (end_date and not start_date):
+        return JSONResponse(
+            {"detail": "Renseignez les deux dates pour filtrer les factures CAM."},
+            status_code=400,
+        )
+
+    if start_date and end_date:
+        try:
+            start = parse_iso_date(start_date)
+            end = parse_iso_date(end_date)
+        except ValueError:
+            return JSONResponse({"detail": "Date invalide. Format attendu AAAA-MM-JJ."}, status_code=400)
+        if start > end:
+            return JSONResponse(
+                {"detail": "La date de début doit être antérieure ou égale à la date de fin."},
+                status_code=400,
+            )
+        factures = filter_big_factures_by_date(cache.get("all_big_factures", []), start, end)
+        mode = "date_range"
+        source_files = cache.get("facture_source_files", [])
+        date_range = {"start": start.isoformat(), "end": end.isoformat()}
+    else:
+        factures = cache.get("current_big_factures", [])
+        mode = "default"
+        source_files = cache.get("current_facture_source_files", [])
+        date_range = None
+
+    if not cache.get("all_big_factures"):
+        warnings.append(
+            "Aucune donnée facture n'a été détectée. Importez ARTICLE, FACTURE et le dossier Factures pour activer l'analyse CAM."
+        )
+
+    return JSONResponse(
+        build_cam_facture_payload(
+            cam,
+            factures,
+            mode=mode,
+            source_files=source_files,
+            date_range=date_range,
+            warnings=warnings,
+        )
+    )
+
+
 @app.get("/api/status")
 async def source_status():
     """Return metadata about the loaded data cache for the source status panel."""
@@ -1005,10 +1430,21 @@ async def import_folder(files: list[UploadFile] = File(...)):
 
         filename = relative_segments[-1]
         parent_segments = relative_segments[:-1]
+        is_root_level = len(parent_segments) == 0
         in_reglements_dir = any(is_reglements_dir_name(segment) for segment in parent_segments)
+        in_factures_dir = any(is_factures_dir_name(segment) for segment in parent_segments)
         is_monthly_file = filename.casefold() == "reglement.txt"
         is_history_file = in_reglements_dir and is_reglement_text_filename(filename)
-        if not (is_monthly_file or is_history_file):
+        is_article_file = is_root_level and is_named_source_file(filename, "ARTICLE")
+        is_current_facture_file = is_root_level and is_named_source_file(filename, "FACTURE")
+        is_history_facture_file = in_factures_dir
+        if not (
+            is_monthly_file
+            or is_history_file
+            or is_article_file
+            or is_current_facture_file
+            or is_history_facture_file
+        ):
             await upload.close()
             continue
 

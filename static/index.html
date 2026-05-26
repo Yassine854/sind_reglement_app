@@ -258,6 +258,25 @@
   tr:last-child td { border-bottom: none; }
   tr:hover td { background: var(--surface2); }
   .num { text-align: right; font-variant-numeric: tabular-nums; }
+  .clickable-row { cursor: pointer; }
+  .clickable-row td { transition: background 0.12s ease; }
+  .cam-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    border: none;
+    background: transparent;
+    padding: 0;
+    color: inherit;
+    cursor: pointer;
+    font: inherit;
+    text-align: left;
+  }
+  .cam-link-hint {
+    font-size: 11px;
+    color: var(--text3);
+    font-weight: 600;
+  }
 
   /* ── Rank badge ── */
   .rank {
@@ -485,6 +504,69 @@
   .import-result-tag.warn { background: var(--amber-light); color: var(--amber); }
   .import-result-tag.err { background: var(--pink-light); color: var(--pink-dark); }
 
+  /* ── CAM detail view ── */
+  .cam-detail-view {
+    display: none;
+    margin-bottom: 1.5rem;
+  }
+  .cam-detail-hero {
+    background: var(--surface);
+    border: 0.5px solid var(--border);
+    border-radius: var(--radius);
+    padding: 1rem 1.25rem;
+    margin-bottom: 1rem;
+  }
+  .cam-detail-title-row {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 1rem;
+    flex-wrap: wrap;
+  }
+  .back-btn {
+    border: none;
+    background: transparent;
+    color: var(--teal);
+    cursor: pointer;
+    font: inherit;
+    font-weight: 700;
+    margin-bottom: 12px;
+    padding: 0;
+  }
+  .section-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 1rem 1.1rem 0.75rem;
+    border-bottom: 0.5px solid var(--border);
+    background: var(--surface);
+  }
+  .section-title {
+    font-size: 15px;
+    font-weight: 700;
+    color: var(--text);
+  }
+  .section-sub {
+    font-size: 12px;
+    color: var(--text2);
+    margin-top: 3px;
+  }
+  .cam-detail-grid {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 1rem;
+  }
+  .article-name {
+    font-weight: 600;
+    color: var(--text);
+  }
+  .article-sub {
+    font-size: 12px;
+    color: var(--text3);
+    margin-top: 2px;
+  }
+
   /* ── Responsive ── */
   @media (max-width: 700px) {
     .stats-row { grid-template-columns: repeat(2,1fr); }
@@ -494,6 +576,7 @@
     .filter-field input { min-width: 100%; }
     main { padding: 1rem; }
     th, td { padding: 8px 10px; font-size: 12px; }
+    .cam-detail-title-row { flex-direction: column; }
   }
 </style>
 </head>
@@ -515,7 +598,7 @@
   <div class="import-card">
     <div style="flex:1;min-width:0;">
       <div class="import-title">Importer Fichiers Sources</div>
-      <div class="import-sub">Sélectionnez votre dossier <strong>Fichiers Sources</strong> — <strong>REGLEMENT.txt</strong> et les fichiers du dossier <strong>Réglements</strong> seront détectés automatiquement.</div>
+      <div class="import-sub">Sélectionnez votre dossier <strong>Fichiers Sources</strong> — l’application détecte automatiquement <strong>REGLEMENT.txt</strong>, le dossier <strong>Réglements</strong>, <strong>ARTICLE</strong>, <strong>FACTURE</strong> et l’historique du dossier <strong>Factures</strong>.</div>
       <div id="import-progress-zone" class="import-progress-zone" style="display:none">
         <div class="import-progress-header">
           <span class="import-progress-title" id="import-progress-title"></span>
@@ -672,6 +755,87 @@
 
   </div>
 
+  <div id="cam-detail-view" class="cam-detail-view">
+    <div class="cam-detail-hero">
+      <button class="back-btn" id="cam-detail-back" type="button">← Retour au classement</button>
+      <div class="cam-detail-title-row">
+        <div>
+          <div class="upload-title" id="cam-detail-title">Vue CAM</div>
+          <div class="upload-sub" id="cam-detail-sub">Analyse détaillée des factures.</div>
+        </div>
+        <div class="source-info-grid" id="cam-detail-badges"></div>
+      </div>
+    </div>
+
+    <div class="stats-row" id="cam-detail-stats">
+      <div class="stat-card">
+        <div class="stat-label">Nb factures</div>
+        <div class="stat-val" id="cam-factures-count">—</div>
+        <div class="stat-sub">Grandes factures sur la période</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Total vente</div>
+        <div class="stat-val" id="cam-factures-total">—</div>
+        <div class="stat-sub">Somme des ventes facturées</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Article leader</div>
+        <div class="stat-val" id="cam-top-article" style="font-size:16px">—</div>
+        <div class="stat-sub" id="cam-top-article-sub">Aucun article</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Articles suivis</div>
+        <div class="stat-val" id="cam-top-article-count">—</div>
+        <div class="stat-sub">Articles agrégés dans les factures</div>
+      </div>
+    </div>
+
+    <div class="cam-detail-grid">
+      <div class="table-wrap">
+        <div class="section-head">
+          <div>
+            <div class="section-title">Articles plus vendus</div>
+            <div class="section-sub">Quantité et vente cumulées, enrichies par le fichier ARTICLE.</div>
+          </div>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>Article</th>
+              <th style="width:130px">Code</th>
+              <th class="num" style="width:110px">Qté</th>
+              <th class="num" style="width:130px">Vente (DT)</th>
+            </tr>
+          </thead>
+          <tbody id="cam-articles-body"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="table-wrap" style="margin-top:1rem">
+      <div class="section-head">
+        <div>
+          <div class="section-title">Big factures</div>
+          <div class="section-sub">Toutes les factures regroupées pour cette CAM sur la plage active.</div>
+        </div>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th style="width:110px">Date</th>
+            <th style="width:170px">Facture</th>
+            <th style="width:110px">Client</th>
+            <th>Top articles</th>
+            <th class="num" style="width:95px">Lignes</th>
+            <th class="num" style="width:115px">Qté</th>
+            <th class="num" style="width:130px">Vente (DT)</th>
+          </tr>
+        </thead>
+        <tbody id="cam-factures-body"></tbody>
+      </table>
+    </div>
+  </div>
+
   <div id="loading" style="display:none" class="state-msg">
     <div class="spinner"></div>
     Analyse en cours…
@@ -697,6 +861,8 @@ const syncDot = document.getElementById('sync-dot');
 const syncLabel = document.getElementById('sync-label');
 const sourceInfoGrid = document.getElementById('source-info-grid');
 const folderInput = document.getElementById('folder-input');
+const camDetailView = document.getElementById('cam-detail-view');
+let currentDashboardState = { mode: 'default', dateRange: null };
 
 // ── UI helpers ────────────────────────────────────────────────────────────────
 function setLoading(isLoading) {
@@ -721,6 +887,10 @@ function showWarning(messages) {
 function showEmpty(message) {
   emptyMsg.textContent = message;
   emptyMsg.style.display = 'block';
+}
+
+function hideCamDetail() {
+  camDetailView.style.display = 'none';
 }
 
 function escapeHtml(value) {
@@ -764,12 +934,32 @@ function updateSourcePanel(status) {
     text: hasHistory ? 'Réglements détecté' : 'Réglements manquant',
     kind: hasHistory ? 'ok' : 'warn'
   });
+  tags.push({
+    text: status.article_found ? 'ARTICLE détecté' : 'ARTICLE manquant',
+    kind: status.article_found ? 'ok' : 'warn'
+  });
+  tags.push({
+    text: status.facture_found ? 'FACTURE détecté' : 'FACTURE manquant',
+    kind: status.facture_found ? 'ok' : 'warn'
+  });
+  tags.push({
+    text: status.factures_found
+      ? ((status.facture_history_file_count || 0) + ' facture(s) historique(s)')
+      : 'Factures manquant',
+    kind: status.factures_found ? 'ok' : 'warn'
+  });
   if (status.source_file_count) {
     tags.push({ text: status.source_file_count + ' fichier(s) règlement chargé(s)', kind: 'ok' });
   }
   if (status.coverage_start && status.coverage_end) {
     tags.push({
       text: 'Période: ' + formatExactDate(status.coverage_start) + ' → ' + formatExactDate(status.coverage_end),
+      kind: 'ok',
+    });
+  }
+  if (status.facture_coverage_start && status.facture_coverage_end) {
+    tags.push({
+      text: 'Factures: ' + formatExactDate(status.facture_coverage_start) + ' → ' + formatExactDate(status.facture_coverage_end),
       kind: 'ok',
     });
   }
@@ -819,7 +1009,7 @@ function setImportState(state, opts) {
     pctEl.textContent = '';
     fillEl.style.width = '5%';
     fillEl.className = 'import-progress-fill';
-    subEl.innerHTML = '<span class="import-spinner"></span><span>Détection des fichiers de règlements\u2026</span>';
+    subEl.innerHTML = '<span class="import-spinner"></span><span>Détection des fichiers règlements et factures\u2026</span>';
     tagsEl.innerHTML = '';
     return;
   }
@@ -831,7 +1021,7 @@ function setImportState(state, opts) {
     pctEl.textContent = p + '%';
     fillEl.style.width = p + '%';
     fillEl.className = 'import-progress-fill';
-    subEl.innerHTML = '<span class="import-spinner"></span><span>Envoi des fichiers de règlements\u2026</span>';
+    subEl.innerHTML = '<span class="import-spinner"></span><span>Envoi des fichiers utiles du dossier Fichiers Sources\u2026</span>';
     return;
   }
 
@@ -854,6 +1044,22 @@ function setImportState(state, opts) {
       tagItems.push({ text: n + ' fichier(s) historique(s) d\u00e9tect\u00e9(s)', kind: 'ok' });
     } else {
       tagItems.push({ text: 'Dossier R\u00e9glements introuvable', kind: 'warn' });
+    }
+    tagItems.push({
+      text: payload.article_found ? 'ARTICLE d\u00e9tect\u00e9' : 'ARTICLE introuvable',
+      kind: payload.article_found ? 'ok' : 'warn'
+    });
+    tagItems.push({
+      text: payload.facture_found ? 'FACTURE d\u00e9tect\u00e9' : 'FACTURE introuvable',
+      kind: payload.facture_found ? 'ok' : 'warn'
+    });
+    if (payload.factures_found) {
+      tagItems.push({
+        text: (payload.facture_history_file_count || 0) + ' facture(s) historique(s) d\u00e9tect\u00e9(s)',
+        kind: 'ok'
+      });
+    } else {
+      tagItems.push({ text: 'Dossier Factures introuvable', kind: 'warn' });
     }
     tagsEl.innerHTML = tagItems.map(t =>
       '<span class="import-result-tag ' + t.kind + '">' + escapeHtml(t.text) + '</span>'
@@ -910,22 +1116,25 @@ async function importFolderFromSelection() {
   const allFiles = Array.from(folderInput.files || []);
   if (!allFiles.length) return;
 
-  // Filter to only relevant règlement files (REGLEMENT.txt at root + files in Réglements/)
+  // Filter to only relevant règlement/facture files from the selected root folder.
   const relevantFiles = allFiles.filter(function(file) {
     const path = (file.webkitRelativePath || file.name).replace(/\\/g, '/');
     const parts = path.split('/').filter(function(p) { return p.length > 0; });
     if (parts.length < 2) return false;
     // REGLEMENT.txt directly under the selected folder root
     if (parts.length === 2 && parts[1].toLowerCase() === 'reglement.txt') return true;
+    if (parts.length === 2 && normalizeToken(parts[1].split('.')[0]) === 'article') return true;
+    if (parts.length === 2 && normalizeToken(parts[1].split('.')[0]) === 'facture') return true;
     // Files nested inside a folder whose name normalises to 'reglements'
     for (let i = 1; i < parts.length - 1; i++) {
       if (normalizeToken(parts[i]) === 'reglements') return true;
+      if (normalizeToken(parts[i]) === 'factures') return true;
     }
     return false;
   });
 
   if (relevantFiles.length === 0) {
-    setImportState('error', { message: 'Aucun fichier REGLEMENT.txt ou dossier Réglements trouvé dans le dossier sélectionné.' });
+    setImportState('error', { message: 'Aucun fichier attendu (REGLEMENT, ARTICLE, FACTURE, Réglements ou Factures) n’a été trouvé dans le dossier sélectionné.' });
     folderInput.value = '';
     return;
   }
@@ -985,6 +1194,7 @@ async function fetchDashboard(url) {
     render(data);
   } catch (error) {
     setLoading(false);
+    hideCamDetail();
     document.getElementById('stats-row').style.display = 'none';
     document.getElementById('results-section').style.display = 'none';
     showWarning([error.message || 'Erreur lors du chargement des règlements.']);
@@ -1015,6 +1225,10 @@ function applyDateFilter() {
 document.getElementById('apply-filter').addEventListener('click', applyDateFilter);
 document.getElementById('reset-filter').addEventListener('click', loadDefaultData);
 document.getElementById('import-folder-btn').addEventListener('click', function() { folderInput.click(); });
+document.getElementById('cam-detail-back').addEventListener('click', function() {
+  hideCamDetail();
+  document.getElementById('results-section').style.display = 'block';
+});
 folderInput.addEventListener('change', importFolderFromSelection);
 
 // ── Rendering ─────────────────────────────────────────────────────────────────
@@ -1022,13 +1236,117 @@ function siteBadge(site) {
   return '<span class="site-badge site-' + site + '">' + site + '</span>';
 }
 
-function camCell(cam, site) {
-  return '<span class="cam-badge">' + cam + '</span>' + siteBadge(site);
+function camCell(cam, site, opts) {
+  opts = opts || {};
+  const content = '<span class="cam-badge">' + cam + '</span>' + siteBadge(site);
+  if (!opts.clickable) return content;
+  return '<button class="cam-link" type="button" onclick="openCamDetail(\'' + cam + '\')">' + content + '<span class="cam-link-hint">Voir</span></button>';
+}
+
+function currentCamDetailUrl(cam) {
+  const params = new URLSearchParams();
+  if (currentDashboardState.mode === 'date_range' && currentDashboardState.dateRange) {
+    params.set('start_date', currentDashboardState.dateRange.start);
+    params.set('end_date', currentDashboardState.dateRange.end);
+  }
+  const query = params.toString();
+  return '/api/cam/' + encodeURIComponent(cam) + (query ? ('?' + query) : '');
+}
+
+async function openCamDetail(cam) {
+  setLoading(true);
+  try {
+    const res = await fetch(currentCamDetailUrl(cam));
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.detail || 'Impossible de charger les factures CAM.');
+    }
+    renderCamDetail(data);
+  } catch (error) {
+    setLoading(false);
+    showWarning([error.message || 'Impossible de charger les factures CAM.']);
+  }
+}
+
+function renderCamDetail(data) {
+  setLoading(false);
+  document.getElementById('results-section').style.display = 'none';
+  document.getElementById('cam-detail-title').innerHTML = camCell(data.cam, data.site);
+
+  const periodLabel = data.date_range
+    ? ('Période du ' + formatExactDate(data.date_range.start) + ' au ' + formatExactDate(data.date_range.end))
+    : 'Mois en cours · factures du fichier FACTURE';
+  document.getElementById('cam-detail-sub').textContent = periodLabel;
+
+  const badges = [];
+  badges.push({ text: data.cam, kind: 'ok' });
+  badges.push({ text: 'Site ' + data.site, kind: 'ok' });
+  badges.push({ text: data.nb_factures + ' facture(s)', kind: data.nb_factures ? 'ok' : 'warn' });
+  if (data.source_files && data.source_files.length) {
+    badges.push({ text: data.source_files.length + ' fichier(s) facture', kind: 'ok' });
+  }
+  document.getElementById('cam-detail-badges').innerHTML = badges.map(tag =>
+    '<span class="source-info-item ' + tag.kind + '">' + escapeHtml(tag.text) + '</span>'
+  ).join('');
+
+  document.getElementById('cam-factures-count').textContent = fmtI(data.nb_factures || 0);
+  document.getElementById('cam-factures-total').textContent = fmt(data.total_vente || 0);
+  document.getElementById('cam-top-article-count').textContent = fmtI((data.top_articles || []).length);
+
+  const topArticle = (data.top_articles || [])[0];
+  if (topArticle) {
+    document.getElementById('cam-top-article').textContent = topArticle.article_name;
+    document.getElementById('cam-top-article-sub').textContent = fmt(topArticle.amount) + ' DT • ' + fmt(topArticle.quantity) + ' qtés';
+  } else {
+    document.getElementById('cam-top-article').textContent = '—';
+    document.getElementById('cam-top-article-sub').textContent = 'Aucune vente article sur la période';
+  }
+
+  const articlesBody = document.getElementById('cam-articles-body');
+  articlesBody.innerHTML = '';
+  if (data.top_articles && data.top_articles.length) {
+    data.top_articles.forEach(item => {
+      articlesBody.innerHTML += '<tr>'
+        + '<td><div class="article-name">' + escapeHtml(item.article_name) + '</div></td>'
+        + '<td>' + escapeHtml(item.article_code) + '</td>'
+        + '<td class="num">' + fmt(item.quantity) + '</td>'
+        + '<td class="num" style="font-weight:600">' + fmt(item.amount) + '</td>'
+        + '</tr>';
+    });
+  } else {
+    articlesBody.innerHTML = '<tr><td colspan="4" style="color:var(--text3)">Aucun article vendu pour cette CAM sur la période sélectionnée.</td></tr>';
+  }
+
+  const facturesBody = document.getElementById('cam-factures-body');
+  facturesBody.innerHTML = '';
+  if (data.factures && data.factures.length) {
+    data.factures.forEach(item => {
+      const preview = (item.top_articles_preview || []).map(escapeHtml).join(' · ') || '—';
+      facturesBody.innerHTML += '<tr>'
+        + '<td>' + formatExactDate(item.facture_date_iso) + '</td>'
+        + '<td><div class="article-name">' + escapeHtml(item.facture_number) + '</div><div class="article-sub">' + escapeHtml(item.reference || '') + '</div></td>'
+        + '<td>' + escapeHtml(item.client_code || '—') + '</td>'
+        + '<td>' + preview + '</td>'
+        + '<td class="num">' + fmtI(item.line_count || 0) + '</td>'
+        + '<td class="num">' + fmt(item.total_quantity || 0) + '</td>'
+        + '<td class="num" style="font-weight:600">' + fmt(item.total_amount || 0) + '</td>'
+        + '</tr>';
+    });
+  } else {
+    facturesBody.innerHTML = '<tr><td colspan="7" style="color:var(--text3)">Aucune facture pour cette CAM sur la plage active.</td></tr>';
+  }
+
+  camDetailView.style.display = 'block';
 }
 
 function render(data) {
   setLoading(false);
+  hideCamDetail();
   showWarning(data.warnings || []);
+  currentDashboardState = {
+    mode: data.mode || 'default',
+    dateRange: data.date_range || null,
+  };
 
   const hasCamRows = !!(data.rows && data.rows.length);
   const hasSiteRows = !!(data.sites_summary && Object.keys(data.sites_summary).length);
@@ -1079,9 +1397,9 @@ function render(data) {
     if (espPct > 0) bars += '<div class="bar-row"><span class="bar-label" style="color:var(--teal);font-weight:700">E</span><div class="bar-track"><div class="bar-fill" style="width:' + espPct + '%;background:var(--teal)"></div></div></div>';
     if (trtPct > 0) bars += '<div class="bar-row"><span class="bar-label" style="color:var(--blue);font-weight:700">T</span><div class="bar-track"><div class="bar-fill" style="width:' + trtPct + '%;background:var(--blue)"></div></div></div>';
     if (chqPct > 0) bars += '<div class="bar-row"><span class="bar-label" style="color:var(--pink);font-weight:700">C</span><div class="bar-track"><div class="bar-fill" style="width:' + chqPct + '%;background:var(--pink)"></div></div></div>';
-    rb.innerHTML += '<tr>'
+    rb.innerHTML += '<tr class="clickable-row" onclick="openCamDetail(\'' + r.cam + '\')">'
       + '<td><span class="rank ' + rankCls + '">' + r.rank + '</span></td>'
-      + '<td>' + camCell(r.cam, r.site) + '</td>'
+      + '<td>' + camCell(r.cam, r.site) + '<div class="cam-link-hint">Cliquer pour voir les factures</div></td>'
       + '<td><div class="bars">' + bars + '</div></td>'
       + '<td class="num" style="font-weight:600">' + fmt(r.total) + '</td>'
       + '<td class="num" style="color:var(--text2)">' + fmtI(r.total_count) + '</td>'

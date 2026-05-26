@@ -12,6 +12,7 @@ from starlette.datastructures import UploadFile
 from app import (
     _cache,
     file_uri_to_fs_path,
+    get_cam_facture_detail,
     get_source_status,
     get_dashboard_for_filter,
     get_dashboard_for_range,
@@ -32,12 +33,21 @@ class ReglementDateLoadingTests(unittest.TestCase):
             "current_rows": [],
             "source_files": [],
             "current_source_files": [],
+            "article_lookup": {},
+            "all_facture_lines": [],
+            "all_big_factures": [],
+            "current_big_factures": [],
+            "facture_source_files": [],
+            "current_facture_source_files": [],
             "warnings": [],
             "current_warnings": [],
             "loaded_at": None,
             "coverage_start": None,
             "coverage_end": None,
             "history_file_count": 0,
+            "facture_coverage_start": None,
+            "facture_coverage_end": None,
+            "facture_history_file_count": 0,
             "source_diagnostics": {},
             "needs_client_loading": False,
             "sync": {},
@@ -322,6 +332,145 @@ class ReglementDateLoadingTests(unittest.TestCase):
 
         self.assertEqual(status["source_file_count"], 2)
         self.assertEqual(status["history_file_count"], 1)
+
+    def test_folder_import_loads_article_and_facture_datasets(self):
+        files = [
+            UploadFile(
+                filename="Fichiers Sources/REGLEMENT.txt",
+                file=BytesIO(
+                    "CESP-26-05-0000100;26-99-CAM03-00415;20260519;20260519;SFX;ESP;CLS03581;;;FAC-SFX-26-13168;71.9\n".encode(
+                        "utf-8"
+                    )
+                ),
+            ),
+            UploadFile(
+                filename="Fichiers Sources/Réglements/REGLEMENT_historique.txt",
+                file=BytesIO(
+                    "CTRT-26-04-0000078;26-99-CAM03-00410;20260430;20260430;SFX;TRT;CLT06449;;BT;FAC-SFX-26-12000;150.0\n".encode(
+                        "utf-8"
+                    )
+                ),
+            ),
+            UploadFile(
+                filename="Fichiers Sources/ARTICLE.txt",
+                file=BytesIO(
+                    "\n".join(
+                        [
+                            "CARCF1KG;Carotte fraîche 1KG;UN;UN",
+                            "GMCFARPAT1;Pomme de terre;UN;UN",
+                            "PWPSNOUASSER;Poivron Nasser;UN;UN",
+                        ]
+                    ).encode("utf-8")
+                ),
+            ),
+            UploadFile(
+                filename="Fichiers Sources/FACTURE.txt",
+                file=BytesIO(
+                    "\n".join(
+                        [
+                            "FAC-SFX-26-13168;26-04-CAM03-01335;20260519;FAC;SFX;CAM03;CLF01002;CARCF1KG;KG;30;2;11.25;11.25;22.5;10.95",
+                            "FAC-SFX-26-13168;26-04-CAM03-01335;20260519;FAC;SFX;CAM03;CLF01002;GMCFARPAT1;KG;20;2;7.94;7.94;15.88;7.71",
+                            "FAC-SFX-26-13168;26-04-CAM03-01335;20260519;FAC;SFX;CAM03;CLF01002;PWPSNOUASSER;KG;8;2;12.468;12.468;24.936;12.104",
+                        ]
+                    ).encode("utf-8")
+                ),
+            ),
+            UploadFile(
+                filename="Fichiers Sources/Factures/FACTURE_20260430.txt",
+                file=BytesIO(
+                    "FAC-SFX-26-12000;26-04-CAM03-01000;20260430;FAC;SFX;CAM03;CLF00999;CARCF1KG;KG;10;1;10;10;10;9\n".encode(
+                        "utf-8"
+                    )
+                ),
+            ),
+        ]
+
+        response = asyncio.run(import_folder(files))
+        status = json.loads(response.body)
+
+        self.assertTrue(status["article_found"])
+        self.assertTrue(status["facture_found"])
+        self.assertTrue(status["factures_found"])
+        self.assertEqual(status["facture_source_file_count"], 2)
+        self.assertEqual(status["facture_history_file_count"], 1)
+        self.assertEqual(status["facture_coverage_start"], "2026-04-30")
+        self.assertEqual(status["facture_coverage_end"], "2026-05-19")
+        self.assertEqual(len(_cache["all_big_factures"]), 2)
+        self.assertAlmostEqual(_cache["current_big_factures"][0]["total_amount"], 63.316, places=3)
+        self.assertEqual(_cache["all_big_factures"][0]["lines"][0]["article_name"], "Carotte fraîche 1KG")
+
+    def test_cam_facture_detail_respects_selected_date_range(self):
+        files = [
+            UploadFile(
+                filename="Fichiers Sources/REGLEMENT.txt",
+                file=BytesIO(
+                    "CESP-26-05-0000100;26-99-CAM03-00415;20260519;20260519;SFX;ESP;CLS03581;;;FAC-SFX-26-13168;71.9\n".encode(
+                        "utf-8"
+                    )
+                ),
+            ),
+            UploadFile(
+                filename="Fichiers Sources/Réglements/REGLEMENT_historique.txt",
+                file=BytesIO(
+                    "CTRT-26-04-0000078;26-99-CAM03-00410;20260430;20260430;SFX;TRT;CLT06449;;BT;FAC-SFX-26-12000;150.0\n".encode(
+                        "utf-8"
+                    )
+                ),
+            ),
+            UploadFile(
+                filename="Fichiers Sources/ARTICLE",
+                file=BytesIO(
+                    "\n".join(
+                        [
+                            "CARCF1KG;Carotte fraîche 1KG;UN;UN",
+                            "GMCFARPAT1;Pomme de terre;UN;UN",
+                            "PWPSNOUASSER;Poivron Nasser;UN;UN",
+                        ]
+                    ).encode("utf-8")
+                ),
+            ),
+            UploadFile(
+                filename="Fichiers Sources/FACTURE",
+                file=BytesIO(
+                    "\n".join(
+                        [
+                            "FAC-SFX-26-13168;26-04-CAM03-01335;20260519;FAC;SFX;CAM03;CLF01002;CARCF1KG;KG;30;2;11.25;11.25;22.5;10.95",
+                            "FAC-SFX-26-13168;26-04-CAM03-01335;20260519;FAC;SFX;CAM03;CLF01002;GMCFARPAT1;KG;20;2;7.94;7.94;15.88;7.71",
+                            "FAC-SFX-26-13168;26-04-CAM03-01335;20260519;FAC;SFX;CAM03;CLF01002;PWPSNOUASSER;KG;8;2;12.468;12.468;24.936;12.104",
+                        ]
+                    ).encode("utf-8")
+                ),
+            ),
+            UploadFile(
+                filename="Fichiers Sources/Factures/FACTURE_20260430.txt",
+                file=BytesIO(
+                    "\n".join(
+                        [
+                            "FAC-SFX-26-12000;26-04-CAM03-01000;20260430;FAC;SFX;CAM03;CLF00999;CARCF1KG;KG;10;1;10;10;10;9",
+                            "FAC-SFX-26-12000;26-04-CAM03-01000;20260430;FAC;SFX;CAM03;CLF00999;GMCFARPAT1;KG;8;1;8;8;8;7",
+                        ]
+                    ).encode("utf-8")
+                ),
+            ),
+        ]
+        asyncio.run(import_folder(files))
+
+        response = asyncio.run(
+            get_cam_facture_detail(
+                "CAM03",
+                start_date="2026-05-19",
+                end_date="2026-05-19",
+            )
+        )
+        payload = json.loads(response.body)
+
+        self.assertEqual(payload["cam"], "CAM03")
+        self.assertEqual(payload["nb_factures"], 1)
+        self.assertAlmostEqual(payload["total_vente"], 63.316, places=3)
+        self.assertEqual(payload["date_range"], {"start": "2026-05-19", "end": "2026-05-19"})
+        self.assertEqual(payload["factures"][0]["facture_number"], "FAC-SFX-26-13168")
+        self.assertEqual(payload["top_articles"][0]["article_name"], "Poivron Nasser")
+        self.assertAlmostEqual(payload["top_articles"][0]["amount"], 24.936, places=3)
 
     def test_filter_endpoint_alias_works_with_start_and_end(self):
         with tempfile.TemporaryDirectory() as tmpdir:
