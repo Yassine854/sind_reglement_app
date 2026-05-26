@@ -145,6 +145,60 @@
     color: var(--text2);
     font-size: 12px;
   }
+  .guided-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 10px;
+    margin-top: 12px;
+  }
+  .guided-item {
+    background: var(--surface2);
+    border: 0.5px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 10px;
+  }
+  .guided-item-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 4px;
+  }
+  .guided-item-title {
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--text);
+  }
+  .guided-item-sub {
+    font-size: 11px;
+    color: var(--text2);
+    margin-bottom: 8px;
+  }
+  .guided-item-status {
+    margin-top: 8px;
+    font-size: 11px;
+    color: var(--text3);
+  }
+  .guided-tag {
+    font-size: 10px;
+    border-radius: 999px;
+    padding: 2px 8px;
+    font-weight: 700;
+    border: 1px solid transparent;
+  }
+  .guided-tag.ok {
+    background: var(--teal-light);
+    color: var(--teal-dark);
+  }
+  .guided-tag.warn {
+    background: var(--amber-light);
+    color: var(--amber);
+  }
+  .upload-btn.tiny {
+    padding: 7px 10px;
+    font-size: 11px;
+    box-shadow: none;
+  }
   .filter-form {
     display: flex;
     align-items: flex-end;
@@ -598,7 +652,54 @@
   <div class="import-card">
     <div style="flex:1;min-width:0;">
       <div class="import-title">Importer Fichiers Sources</div>
-      <div class="import-sub">Sélectionnez votre dossier <strong>Fichiers Sources</strong> — l’application détecte automatiquement <strong>REGLEMENT.txt</strong>, le dossier <strong>Réglements</strong>, <strong>ARTICLE</strong>, <strong>FACTURE</strong> et l’historique du dossier <strong>Factures</strong>.</div>
+      <div class="import-sub">Import guidé rapide : sélectionnez uniquement les fichiers requis <strong>REGLEMENT.txt</strong>, <strong>Réglements</strong>, <strong>FACTURE</strong>, <strong>Factures</strong> et <strong>ARTICLE</strong>.</div>
+      <div class="guided-grid">
+        <div class="guided-item">
+          <div class="guided-item-head">
+            <div class="guided-item-title">REGLEMENT.txt</div>
+            <span class="guided-tag warn" id="tag-current-reglement">Requis</span>
+          </div>
+          <div class="guided-item-sub">Fichier règlement du mois courant.</div>
+          <button class="upload-btn tiny" type="button" data-picker="input-current-reglement">Choisir le fichier</button>
+          <div class="guided-item-status" id="status-current-reglement">Aucun fichier sélectionné.</div>
+        </div>
+        <div class="guided-item">
+          <div class="guided-item-head">
+            <div class="guided-item-title">Historique Réglements</div>
+            <span class="guided-tag warn" id="tag-history-reglements">Requis</span>
+          </div>
+          <div class="guided-item-sub">Fichiers du dossier Réglements (multi-sélection).</div>
+          <button class="upload-btn tiny" type="button" data-picker="input-history-reglements">Choisir les fichiers</button>
+          <div class="guided-item-status" id="status-history-reglements">Aucun fichier sélectionné.</div>
+        </div>
+        <div class="guided-item">
+          <div class="guided-item-head">
+            <div class="guided-item-title">FACTURE</div>
+            <span class="guided-tag warn" id="tag-current-facture">Requis</span>
+          </div>
+          <div class="guided-item-sub">Fichier facture du mois courant.</div>
+          <button class="upload-btn tiny" type="button" data-picker="input-current-facture">Choisir le fichier</button>
+          <div class="guided-item-status" id="status-current-facture">Aucun fichier sélectionné.</div>
+        </div>
+        <div class="guided-item">
+          <div class="guided-item-head">
+            <div class="guided-item-title">Historique Factures</div>
+            <span class="guided-tag warn" id="tag-history-factures">Requis</span>
+          </div>
+          <div class="guided-item-sub">Fichiers du dossier Factures (multi-sélection).</div>
+          <button class="upload-btn tiny" type="button" data-picker="input-history-factures">Choisir les fichiers</button>
+          <div class="guided-item-status" id="status-history-factures">Aucun fichier sélectionné.</div>
+        </div>
+        <div class="guided-item">
+          <div class="guided-item-head">
+            <div class="guided-item-title">ARTICLE</div>
+            <span class="guided-tag warn" id="tag-article">Requis</span>
+          </div>
+          <div class="guided-item-sub">Fichier de correspondance code article / libellé.</div>
+          <button class="upload-btn tiny" type="button" data-picker="input-article">Choisir le fichier</button>
+          <div class="guided-item-status" id="status-article">Aucun fichier sélectionné.</div>
+        </div>
+      </div>
       <div id="import-progress-zone" class="import-progress-zone" style="display:none">
         <div class="import-progress-header">
           <span class="import-progress-title" id="import-progress-title"></span>
@@ -612,8 +713,12 @@
       </div>
     </div>
     <div id="import-btn-wrap">
-      <input type="file" id="folder-input" webkitdirectory directory multiple style="display:none">
-      <button class="upload-btn" id="import-folder-btn" type="button">Importer le dossier</button>
+      <input type="file" id="input-current-reglement" style="display:none">
+      <input type="file" id="input-history-reglements" multiple style="display:none">
+      <input type="file" id="input-current-facture" style="display:none">
+      <input type="file" id="input-history-factures" multiple style="display:none">
+      <input type="file" id="input-article" style="display:none">
+      <button class="upload-btn" id="import-folder-btn" type="button">Importer les fichiers requis</button>
     </div>
   </div>
 
@@ -860,9 +965,20 @@ const endDateInput = document.getElementById('end-date');
 const syncDot = document.getElementById('sync-dot');
 const syncLabel = document.getElementById('sync-label');
 const sourceInfoGrid = document.getElementById('source-info-grid');
-const folderInput = document.getElementById('folder-input');
+const currentReglementInput = document.getElementById('input-current-reglement');
+const historyReglementsInput = document.getElementById('input-history-reglements');
+const currentFactureInput = document.getElementById('input-current-facture');
+const historyFacturesInput = document.getElementById('input-history-factures');
+const articleInput = document.getElementById('input-article');
 const camDetailView = document.getElementById('cam-detail-view');
 let currentDashboardState = { mode: 'default', dateRange: null };
+const selectedGuidedSources = {
+  currentReglement: null,
+  historyReglements: [],
+  currentFacture: null,
+  historyFactures: [],
+  article: null,
+};
 
 // ── UI helpers ────────────────────────────────────────────────────────────────
 function setLoading(isLoading) {
@@ -913,7 +1029,7 @@ function updateSourcePanel(status) {
   syncDot.className = 'sync-dot' + ((isReady && !hasWarnings) ? '' : ' warn');
   if (!status.loaded || !isUploadedMode) {
     syncDot.className = 'sync-dot offline';
-    syncLabel.textContent = 'Importez le dossier Fichiers Sources pour commencer.';
+    syncLabel.textContent = 'Importez les fichiers requis pour commencer.';
   } else if (isReady && !hasWarnings) {
     syncLabel.textContent = 'Import réussi. Les règlements sont prêts.';
   } else if (isReady) {
@@ -996,7 +1112,7 @@ function setImportState(state, opts) {
     zone.style.display = 'none';
     btnWrap.style.display = '';
     btn.disabled = false;
-    btn.textContent = 'Importer le dossier';
+    btn.textContent = 'Importer les fichiers requis';
     fillEl.className = 'import-progress-fill';
     return;
   }
@@ -1005,11 +1121,11 @@ function setImportState(state, opts) {
 
   if (state === 'scanning') {
     btnWrap.style.display = 'none';
-    titleEl.textContent = 'Analyse du dossier\u2026';
+    titleEl.textContent = 'Préparation de l’import\u2026';
     pctEl.textContent = '';
     fillEl.style.width = '5%';
     fillEl.className = 'import-progress-fill';
-    subEl.innerHTML = '<span class="import-spinner"></span><span>Détection des fichiers règlements et factures\u2026</span>';
+    subEl.innerHTML = '<span class="import-spinner"></span><span>Vérification des fichiers requis\u2026</span>';
     tagsEl.innerHTML = '';
     return;
   }
@@ -1021,7 +1137,7 @@ function setImportState(state, opts) {
     pctEl.textContent = p + '%';
     fillEl.style.width = p + '%';
     fillEl.className = 'import-progress-fill';
-    subEl.innerHTML = '<span class="import-spinner"></span><span>Envoi des fichiers utiles du dossier Fichiers Sources\u2026</span>';
+    subEl.innerHTML = '<span class="import-spinner"></span><span>Envoi des fichiers requis\u2026</span>';
     return;
   }
 
@@ -1086,10 +1202,6 @@ function setImportState(state, opts) {
   }
 }
 
-function normalizeToken(str) {
-  return (str || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
-}
-
 function uploadWithProgress(formData, onProgress) {
   return new Promise(function(resolve, reject) {
     var xhr = new XMLHttpRequest();
@@ -1112,30 +1224,56 @@ function uploadWithProgress(formData, onProgress) {
   });
 }
 
-async function importFolderFromSelection() {
-  const allFiles = Array.from(folderInput.files || []);
-  if (!allFiles.length) return;
+function setGuidedStatus(id, hasValue, text) {
+  const statusEl = document.getElementById('status-' + id);
+  const tagEl = document.getElementById('tag-' + id);
+  statusEl.textContent = text;
+  tagEl.className = 'guided-tag ' + (hasValue ? 'ok' : 'warn');
+  tagEl.textContent = hasValue ? 'Prêt' : 'Requis';
+}
 
-  // Filter to only relevant règlement/facture files from the selected root folder.
-  const relevantFiles = allFiles.filter(function(file) {
-    const path = (file.webkitRelativePath || file.name).replace(/\\/g, '/');
-    const parts = path.split('/').filter(function(p) { return p.length > 0; });
-    if (parts.length < 2) return false;
-    // REGLEMENT.txt directly under the selected folder root
-    if (parts.length === 2 && parts[1].toLowerCase() === 'reglement.txt') return true;
-    if (parts.length === 2 && normalizeToken(parts[1].split('.')[0]) === 'article') return true;
-    if (parts.length === 2 && normalizeToken(parts[1].split('.')[0]) === 'facture') return true;
-    // Files nested inside a folder whose name normalises to 'reglements'
-    for (let i = 1; i < parts.length - 1; i++) {
-      if (normalizeToken(parts[i]) === 'reglements') return true;
-      if (normalizeToken(parts[i]) === 'factures') return true;
-    }
-    return false;
-  });
+function describeSelection(files) {
+  if (!files || !files.length) return 'Aucun fichier sélectionné.';
+  if (files.length === 1) return files[0].name;
+  return files.length + ' fichier(s) sélectionné(s).';
+}
 
-  if (relevantFiles.length === 0) {
-    setImportState('error', { message: 'Aucun fichier attendu (REGLEMENT, ARTICLE, FACTURE, Réglements ou Factures) n’a été trouvé dans le dossier sélectionné.' });
-    folderInput.value = '';
+function refreshGuidedImportSummary() {
+  setGuidedStatus('current-reglement', !!selectedGuidedSources.currentReglement, describeSelection(selectedGuidedSources.currentReglement ? [selectedGuidedSources.currentReglement] : []));
+  setGuidedStatus('history-reglements', selectedGuidedSources.historyReglements.length > 0, describeSelection(selectedGuidedSources.historyReglements));
+  setGuidedStatus('current-facture', !!selectedGuidedSources.currentFacture, describeSelection(selectedGuidedSources.currentFacture ? [selectedGuidedSources.currentFacture] : []));
+  setGuidedStatus('history-factures', selectedGuidedSources.historyFactures.length > 0, describeSelection(selectedGuidedSources.historyFactures));
+  setGuidedStatus('article', !!selectedGuidedSources.article, describeSelection(selectedGuidedSources.article ? [selectedGuidedSources.article] : []));
+}
+
+function clearGuidedInputs() {
+  currentReglementInput.value = '';
+  historyReglementsInput.value = '';
+  currentFactureInput.value = '';
+  historyFacturesInput.value = '';
+  articleInput.value = '';
+  selectedGuidedSources.currentReglement = null;
+  selectedGuidedSources.historyReglements = [];
+  selectedGuidedSources.currentFacture = null;
+  selectedGuidedSources.historyFactures = [];
+  selectedGuidedSources.article = null;
+  refreshGuidedImportSummary();
+}
+
+function validateGuidedImportSelection() {
+  const missing = [];
+  if (!selectedGuidedSources.currentReglement) missing.push('REGLEMENT.txt');
+  if (!selectedGuidedSources.historyReglements.length) missing.push('historique Réglements');
+  if (!selectedGuidedSources.currentFacture) missing.push('FACTURE');
+  if (!selectedGuidedSources.historyFactures.length) missing.push('historique Factures');
+  if (!selectedGuidedSources.article) missing.push('ARTICLE');
+  return missing;
+}
+
+async function importGuidedSelection() {
+  const missing = validateGuidedImportSelection();
+  if (missing.length) {
+    setImportState('error', { message: 'Import incomplet. Fichiers requis manquants : ' + missing.join(', ') + '.' });
     return;
   }
 
@@ -1144,10 +1282,17 @@ async function importFolderFromSelection() {
   showWarning([]);
 
   const formData = new FormData();
-  relevantFiles.forEach(function(f) {
-    formData.append('files', f, f.webkitRelativePath || f.name);
+  formData.append('files', selectedGuidedSources.currentReglement, 'Fichiers Sources/REGLEMENT.txt');
+  selectedGuidedSources.historyReglements.forEach(function(file) {
+    formData.append('files', file, 'Fichiers Sources/Réglements/' + file.name);
   });
+  formData.append('files', selectedGuidedSources.currentFacture, 'Fichiers Sources/FACTURE');
+  selectedGuidedSources.historyFactures.forEach(function(file) {
+    formData.append('files', file, 'Fichiers Sources/Factures/' + file.name);
+  });
+  formData.append('files', selectedGuidedSources.article, 'Fichiers Sources/ARTICLE');
 
+  let imported = false;
   try {
     const payload = await uploadWithProgress(formData, function(pct) {
       setImportState('uploading', { pct: pct });
@@ -1155,11 +1300,12 @@ async function importFolderFromSelection() {
     setImportState('success', { payload: payload });
     updateSourcePanel(payload);
     await loadDefaultData();
+    imported = true;
   } catch (err) {
     setLoading(false);
-    setImportState('error', { message: err.message || "Échec de l'import du dossier." });
+    setImportState('error', { message: err.message || "Échec de l'import des fichiers." });
   } finally {
-    folderInput.value = '';
+    if (imported) clearGuidedInputs();
   }
 }
 
@@ -1224,12 +1370,37 @@ function applyDateFilter() {
 
 document.getElementById('apply-filter').addEventListener('click', applyDateFilter);
 document.getElementById('reset-filter').addEventListener('click', loadDefaultData);
-document.getElementById('import-folder-btn').addEventListener('click', function() { folderInput.click(); });
+document.getElementById('import-folder-btn').addEventListener('click', importGuidedSelection);
 document.getElementById('cam-detail-back').addEventListener('click', function() {
   hideCamDetail();
   document.getElementById('results-section').style.display = 'block';
 });
-folderInput.addEventListener('change', importFolderFromSelection);
+document.querySelectorAll('[data-picker]').forEach(function(btn) {
+  btn.addEventListener('click', function() {
+    const target = document.getElementById(btn.getAttribute('data-picker'));
+    if (target) target.click();
+  });
+});
+currentReglementInput.addEventListener('change', function() {
+  selectedGuidedSources.currentReglement = (currentReglementInput.files && currentReglementInput.files[0]) || null;
+  refreshGuidedImportSummary();
+});
+historyReglementsInput.addEventListener('change', function() {
+  selectedGuidedSources.historyReglements = Array.from(historyReglementsInput.files || []);
+  refreshGuidedImportSummary();
+});
+currentFactureInput.addEventListener('change', function() {
+  selectedGuidedSources.currentFacture = (currentFactureInput.files && currentFactureInput.files[0]) || null;
+  refreshGuidedImportSummary();
+});
+historyFacturesInput.addEventListener('change', function() {
+  selectedGuidedSources.historyFactures = Array.from(historyFacturesInput.files || []);
+  refreshGuidedImportSummary();
+});
+articleInput.addEventListener('change', function() {
+  selectedGuidedSources.article = (articleInput.files && articleInput.files[0]) || null;
+  refreshGuidedImportSummary();
+});
 
 // ── Rendering ─────────────────────────────────────────────────────────────────
 function siteBadge(site) {
@@ -1465,6 +1636,7 @@ function switchTab(name) {
 
 // ── Page load ─────────────────────────────────────────────────────────────────
 async function init() {
+  refreshGuidedImportSummary();
   await loadSourceStatus();
   await loadDefaultData();
 }
