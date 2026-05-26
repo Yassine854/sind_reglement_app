@@ -1234,7 +1234,7 @@ function setGuidedStatus(id, hasValue, text) {
 
 function describeSelection(files) {
   if (!files || !files.length) return 'Aucun fichier sélectionné.';
-  if (files.length === 1) return files[0].name;
+  if (files.length === 1 && files[0]) return files[0].name;
   return files.length + ' fichier(s) sélectionné(s).';
 }
 
