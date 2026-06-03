@@ -1291,7 +1291,7 @@ def get_or_reload_cache() -> dict:
 
 def get_source_status() -> dict:
     """Return a status dict describing the current cache state for the UI."""
-    cache = get_or_reload_cache()
+    cache = _cache
     loaded_at = cache["loaded_at"]
     import_context = cache.get("import_context", {})
     import_status = import_context.get("status") or ("ready" if loaded_at is not None else "idle")
@@ -1922,20 +1922,40 @@ async def import_folder(files: list[UploadFile] = File(...)):
             discovered["root_name"] = expected_root_name
 
         discovered["warnings"] = warnings + discovered.get("warnings", [])
+        _cache.update({
+            "all_rows": [],
+            "current_rows": [],
+            "source_files": [],
+            "current_source_files": [],
+            "article_lookup": {},
+            "etatmarge_lookup": {},
+            "etatmarge_warnings": [],
+            "all_facture_lines": [],
+            "all_big_factures": [],
+            "current_big_factures": [],
+            "facture_source_files": [],
+            "current_facture_source_files": [],
+            "warnings": [],
+            "current_warnings": [],
+            "loaded_at": None,
+            "coverage_start": None,
+            "coverage_end": None,
+            "history_file_count": 0,
+            "facture_coverage_start": None,
+            "facture_coverage_end": None,
+            "facture_history_file_count": 0,
+            "source_diagnostics": {},
+            "sync": {},
+        })
         _cache["import_context"] = {
             **discovered,
             "active": True,
             "uploaded_at": time.time(),
-            "status": "processing",
         }
         payload = get_source_status()
-        payload["import_status"] = "processing"
-        payload["message"] = "Fichiers uploadés avec succès. Traitement en cours..."
-        payload["uploaded_files"] = saved_files
+        payload["import_results"] = build_import_results(payload)
         payload["upload_file_results"] = upload_results
-        task = asyncio.create_task(process_import_async(import_root))
-        _import_tasks.add(task)
-        task.add_done_callback(_import_tasks.discard)
+        payload["uploaded_files"] = saved_files
         return JSONResponse(payload)
     except Exception as exc:
         shutil.rmtree(import_root, ignore_errors=True)
