@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import app as app_module
+from openpyxl import Workbook
 from starlette.datastructures import UploadFile
 from app import (
     _cache,
@@ -18,6 +19,7 @@ from app import (
     get_dashboard_for_range,
     get_default_dashboard,
     import_folder,
+    parse_etatmarge_rows,
     parse_lines,
     read_text_file,
     reload_cache,
@@ -34,6 +36,7 @@ class ReglementDateLoadingTests(unittest.TestCase):
             "source_files": [],
             "current_source_files": [],
             "article_lookup": {},
+            "etatmarge_lookup": {},
             "all_facture_lines": [],
             "all_big_factures": [],
             "current_big_factures": [],
@@ -53,6 +56,18 @@ class ReglementDateLoadingTests(unittest.TestCase):
             "sync": {},
             "import_context": {},
         })
+
+    @staticmethod
+    def _build_etatmarge_workbook_bytes(rows: list[list[object]]) -> bytes:
+        workbook = Workbook()
+        sheet = workbook.active
+        for row in rows:
+            sheet.append(row)
+        stream = BytesIO()
+        workbook.save(stream)
+        workbook.close()
+        stream.seek(0)
+        return stream.getvalue()
 
     def test_parse_lines_uses_reglement_date_column(self):
         text = "CTRT-26-03-0000002;26-99-CAM50-00159;20260304;20260525;SFX;TRT;CLS06386;;ATB;ACF-SFX-26-00003;188.249"
@@ -389,6 +404,7 @@ class ReglementDateLoadingTests(unittest.TestCase):
         status = json.loads(response.body)
 
         self.assertTrue(status["article_found"])
+        self.assertFalse(status["etatmarge_found"])
         self.assertTrue(status["facture_found"])
         self.assertTrue(status["factures_found"])
         self.assertEqual(status["facture_source_file_count"], 2)
@@ -396,8 +412,124 @@ class ReglementDateLoadingTests(unittest.TestCase):
         self.assertEqual(status["facture_coverage_start"], "2026-04-30")
         self.assertEqual(status["facture_coverage_end"], "2026-05-19")
         self.assertEqual(len(_cache["all_big_factures"]), 2)
-        self.assertAlmostEqual(_cache["current_big_factures"][0]["total_amount"], 63.316, places=3)
+        self.assertAlmostEqual(_cache["current_big_factures"][0]["total_amount"], 64.316, places=3)
         self.assertEqual(_cache["all_big_factures"][0]["lines"][0]["article_name"], "Carotte fraîche 1KG")
+
+    def test_parse_etatmarge_rows_uses_real_header_row_after_preamble(self):
+        rows = [
+            [
+                "SINDBAD DE DISTRIBUTION",
+                "Date:",
+                "21/01/2026",
+                "Fournisseur",
+                "Famille",
+                "Article",
+                "Désignation Article",
+            ],
+            [
+                "Fournisseur",
+                "Famille",
+                "Article",
+                "Désignation Article",
+                "Unité",
+                "Prix Ach.",
+                "Tva",
+            ],
+            ["BONPR", "GOBPS", "STNGMABA150", "Test", "UN", "5,000", "19,000"],
+            ["BONPR", "GOBPS", "ZZZ000", "Sans TVA", "UN", "2,000", "0,000"],
+        ]
+
+        lookup = parse_etatmarge_rows(rows)
+
+        self.assertEqual(lookup["STNGMABA150"], 19.0)
+        self.assertEqual(lookup["ZZZ000"], 0.0)
+
+    def test_folder_import_applies_etatmarge_tva_and_timbre(self):
+        etatmarge_bytes = self._build_etatmarge_workbook_bytes(
+            [
+                [
+                    "SINDBAD DE DISTRIBUTION",
+                    "Date:",
+                    "21/01/2026",
+                    "Fournisseur",
+                    "Famille",
+                    "Article",
+                    "Désignation Article",
+                    "Unité",
+                    "Prix Ach.",
+                ],
+                [
+                    "Fournisseur",
+                    "Famille",
+                    "Article",
+                    "Désignation Article",
+                    "Unité",
+                    "Prix Ach.",
+                    "Tva",
+                ],
+                ["BONPR", "GOBPS", "PWPSNOUASSER", "Poivron Nasser", "UN", "1,337", "19,000"],
+            ]
+        )
+        files = [
+            UploadFile(
+                filename="Fichiers Sources/REGLEMENT.txt",
+                file=BytesIO(
+                    "CESP-26-05-0000100;26-99-CAM03-00415;20260519;20260519;SFX;ESP;CLS03581;;;FAC-SFX-26-13168;71.9\n".encode(
+                        "utf-8"
+                    )
+                ),
+            ),
+            UploadFile(
+                filename="Fichiers Sources/Réglements/REGLEMENT_historique.txt",
+                file=BytesIO(
+                    "CTRT-26-04-0000078;26-99-CAM03-00410;20260430;20260430;SFX;TRT;CLT06449;;BT;FAC-SFX-26-12000;150.0\n".encode(
+                        "utf-8"
+                    )
+                ),
+            ),
+            UploadFile(
+                filename="Fichiers Sources/ARTICLE.txt",
+                file=BytesIO(
+                    "\n".join(
+                        [
+                            "CARCF1KG;Carotte fraîche 1KG;UN;UN",
+                            "GMCFARPAT1;Pomme de terre;UN;UN",
+                            "PWPSNOUASSER;Poivron Nasser;UN;UN",
+                        ]
+                    ).encode("utf-8")
+                ),
+            ),
+            UploadFile(
+                filename="Fichiers Sources/FACTURE.txt",
+                file=BytesIO(
+                    "\n".join(
+                        [
+                            "FAC-SFX-26-13168;26-04-CAM03-01335;20260519;FAC;SFX;CAM03;CLF01002;CARCF1KG;KG;30;2;11.25;11.25;22.5;10.95",
+                            "FAC-SFX-26-13168;26-04-CAM03-01335;20260519;FAC;SFX;CAM03;CLF01002;GMCFARPAT1;KG;20;2;7.94;7.94;15.88;7.71",
+                            "FAC-SFX-26-13168;26-04-CAM03-01335;20260519;FAC;SFX;CAM03;CLF01002;PWPSNOUASSER;KG;8;2;12.468;12.468;24.936;12.104",
+                        ]
+                    ).encode("utf-8")
+                ),
+            ),
+            UploadFile(
+                filename="Fichiers Sources/Factures/FACTURE_20260430.txt",
+                file=BytesIO(
+                    "FAC-SFX-26-12000;26-04-CAM03-01000;20260430;FAC;SFX;CAM03;CLF00999;CARCF1KG;KG;10;1;10;10;10;9\n".encode(
+                        "utf-8"
+                    )
+                ),
+            ),
+            UploadFile(
+                filename="Fichiers Sources/etatmarge.xlsx",
+                file=BytesIO(etatmarge_bytes),
+            ),
+        ]
+
+        response = asyncio.run(import_folder(files))
+        status = json.loads(response.body)
+
+        self.assertTrue(status["etatmarge_found"])
+        self.assertAlmostEqual(_cache["current_big_factures"][0]["total_amount"], 69.054, places=3)
 
     def test_cam_facture_detail_respects_selected_date_range(self):
         files = [
@@ -466,7 +598,7 @@ class ReglementDateLoadingTests(unittest.TestCase):
 
         self.assertEqual(payload["cam"], "CAM03")
         self.assertEqual(payload["nb_factures"], 1)
-        self.assertAlmostEqual(payload["total_vente"], 63.316, places=3)
+        self.assertAlmostEqual(payload["total_vente"], 64.316, places=3)
         self.assertEqual(payload["date_range"], {"start": "2026-05-19", "end": "2026-05-19"})
         self.assertEqual(payload["factures"][0]["facture_number"], "FAC-SFX-26-13168")
         self.assertEqual(payload["top_articles"][0]["article_name"], "Poivron Nasser")
