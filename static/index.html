@@ -1240,6 +1240,7 @@ function uploadWithProgress(formData, onProgress) {
   return new Promise(function(resolve, reject) {
     var xhr = new XMLHttpRequest();
     xhr.open('POST', '/api/import-folder');
+    xhr.timeout = 25000;
     xhr.upload.addEventListener('progress', function(e) {
       if (e.lengthComputable) onProgress(Math.round(e.loaded / e.total * 100));
     });
@@ -1248,9 +1249,11 @@ function uploadWithProgress(formData, onProgress) {
       try {
         data = JSON.parse(xhr.responseText || '{}');
       } catch (_) {
-        var fallbackMessage = xhr.status >= 500
-          ? ('Erreur serveur lors de l\'import (erreur ' + xhr.status + ').')
-          : ('Réponse invalide du serveur (erreur ' + xhr.status + ').');
+        var fallbackMessage = (xhr.status === 502 || xhr.status === 504)
+          ? ("Le serveur a mis trop de temps à répondre (erreur " + xhr.status + "). Vérifiez la taille des fichiers et réessayez.")
+          : xhr.status >= 500
+            ? ('Erreur serveur lors de l\'import (erreur ' + xhr.status + ').')
+            : ('Réponse invalide du serveur (erreur ' + xhr.status + ').');
         reject({ message: fallbackMessage, payload: { detail: fallbackMessage }, status: xhr.status });
         return;
       }
@@ -1266,6 +1269,7 @@ function uploadWithProgress(formData, onProgress) {
     });
     xhr.addEventListener('error', function() { reject({ message: "Erreur réseau lors de l'import." }); });
     xhr.addEventListener('abort', function() { reject({ message: 'Import annulé.' }); });
+    xhr.addEventListener('timeout', function() { reject({ message: "L'import a expiré (délai dépassé). Vérifiez la taille des fichiers et réessayez." }); });
     xhr.send(formData);
   });
 }
@@ -1326,6 +1330,21 @@ async function importGuidedSelection() {
   const missing = validateGuidedImportSelection();
   if (missing.length) {
     setImportState('error', { message: 'Import incomplet. Fichiers requis manquants : ' + missing.join(', ') + '.' });
+    return;
+  }
+
+  const MAX_CLIENT_UPLOAD_SIZE = 100 * 1024 * 1024; // 100 MB
+  const allFiles = [
+    selectedGuidedSources.currentReglement,
+    ...selectedGuidedSources.historyReglements,
+    selectedGuidedSources.currentFacture,
+    ...selectedGuidedSources.historyFactures,
+    selectedGuidedSources.article,
+    selectedGuidedSources.etatmarge,
+  ].filter(Boolean);
+  const totalSize = allFiles.reduce(function(sum, f) { return sum + f.size; }, 0);
+  if (totalSize > MAX_CLIENT_UPLOAD_SIZE) {
+    setImportState('error', { message: 'La taille totale des fichiers dépasse la limite autorisée (100 Mo). Réduisez le nombre de fichiers et réessayez.' });
     return;
   }
 
