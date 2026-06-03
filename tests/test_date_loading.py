@@ -300,6 +300,7 @@ class ReglementDateLoadingTests(unittest.TestCase):
 
         self.assertFalse(initial_payload["loaded"])
         self.assertEqual(status["source_mode"], "uploaded_folder")
+        self.assertTrue(status["loaded"])
         self.assertEqual(status["uploaded_root_name"], "Fichiers Sources")
         self.assertTrue(status["current_found"])
         self.assertTrue(status["history_found"])

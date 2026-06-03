@@ -1308,9 +1308,17 @@ def get_source_status() -> dict:
         "coverage_start": cache["coverage_start"],
         "coverage_end": cache["coverage_end"],
         "source_file_count": len(cache["source_files"]),
-        "history_file_count": cache["history_file_count"],
+        "history_file_count": (
+            cache["history_file_count"]
+            if loaded_at is not None
+            else int(import_context.get("history_file_count") or 0)
+        ),
         "facture_source_file_count": len(cache.get("facture_source_files", [])),
-        "facture_history_file_count": cache.get("facture_history_file_count", 0),
+        "facture_history_file_count": (
+            cache.get("facture_history_file_count", 0)
+            if loaded_at is not None
+            else int(import_context.get("facture_history_file_count") or 0)
+        ),
         "has_data": bool(cache["all_rows"]),
         "has_facture_data": bool(cache.get("all_big_factures")),
         "warnings": cache["warnings"],
@@ -1801,6 +1809,8 @@ async def import_folder(files: list[UploadFile] = File(...)):
     warnings: list[str] = []
     current_upload_name: str | None = None
     upload_results: list[dict] = []
+    detected_history_file_count = 0
+    detected_facture_history_file_count = 0
 
     try:
         for upload in files:
@@ -1881,6 +1891,10 @@ async def import_folder(files: list[UploadFile] = File(...)):
                         )
                     await out.write(chunk)
             saved_files += 1
+            if is_history_file:
+                detected_history_file_count += 1
+            if is_history_facture_file:
+                detected_facture_history_file_count += 1
             upload_results.append(
                 {
                     "file": raw_rel_path,
@@ -1922,6 +1936,8 @@ async def import_folder(files: list[UploadFile] = File(...)):
             discovered["root_name"] = expected_root_name
 
         discovered["warnings"] = warnings + discovered.get("warnings", [])
+        discovered["history_file_count"] = detected_history_file_count
+        discovered["facture_history_file_count"] = detected_facture_history_file_count
         _cache.update({
             "all_rows": [],
             "current_rows": [],
