@@ -1,4 +1,6 @@
+import asyncio
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime
 import json
 import logging
@@ -89,6 +91,8 @@ _cache: dict = {
     "sync": {},
     "import_context": {},
 }
+IMPORT_EXECUTOR = ThreadPoolExecutor(max_workers=1)
+_import_tasks: set[asyncio.Task] = set()
 
 CAM_SITE_MAP: dict[str, str] = {
     # SFX
@@ -1278,6 +1282,9 @@ def reload_cache() -> None:
 def get_or_reload_cache() -> dict:
     """Return the cache, triggering a load from source paths if not yet loaded."""
     if _cache["loaded_at"] is None:
+        import_context = _cache.get("import_context") or {}
+        if import_context.get("status") == "processing":
+            return _cache
         reload_cache()
     return _cache
 
@@ -1287,6 +1294,7 @@ def get_source_status() -> dict:
     cache = get_or_reload_cache()
     loaded_at = cache["loaded_at"]
     import_context = cache.get("import_context", {})
+    import_status = import_context.get("status") or ("ready" if loaded_at is not None else "idle")
     using_uploaded_folder = bool(import_context.get("active"))
     current_source = import_context.get("current_path") if using_uploaded_folder else DEFAULT_CURRENT_REGLEMENT_FILE
     history_source = import_context.get("history_path") if using_uploaded_folder else DEFAULT_HISTORY_REGLEMENTS_DIR
@@ -1337,6 +1345,16 @@ def get_source_status() -> dict:
             else "—"
         ),
         "source_mode": "uploaded_folder" if using_uploaded_folder else "configured_paths",
+        "import_status": import_status,
+        "import_error_message": import_context.get("error_message"),
+        "import_context": {
+            "active": bool(import_context.get("active")),
+            "status": import_status,
+            "uploaded_at": import_context.get("uploaded_at"),
+            "error_message": import_context.get("error_message"),
+            "root_name": import_context.get("root_name"),
+            "root_path": import_context.get("root_path"),
+        },
         "uploaded_root_name": import_context.get("root_name"),
         "uploaded_root_path": import_context.get("root_path"),
         "expected_current_name": "REGLEMENT.txt",
@@ -1724,6 +1742,23 @@ async def source_status():
     return JSONResponse(get_source_status())
 
 
+async def process_import_async(import_root: str) -> None:
+    """Reload cached data in a background worker after upload."""
+    loop = asyncio.get_running_loop()
+    try:
+        await loop.run_in_executor(IMPORT_EXECUTOR, reload_cache)
+        import_context = _cache.get("import_context") or {}
+        if import_context.get("active") and import_context.get("root_path") == import_root:
+            import_context["status"] = "ready"
+            import_context.pop("error_message", None)
+    except Exception as exc:
+        logger.exception("Import background processing failed")
+        import_context = _cache.get("import_context") or {}
+        if import_context.get("active") and import_context.get("root_path") == import_root:
+            import_context["status"] = "error"
+            import_context["error_message"] = str(exc)
+
+
 @app.post("/api/refresh")
 async def refresh_data():
     """Force a reload of all règlement data from the configured source paths."""
@@ -1891,11 +1926,16 @@ async def import_folder(files: list[UploadFile] = File(...)):
             **discovered,
             "active": True,
             "uploaded_at": time.time(),
+            "status": "processing",
         }
-        reload_cache()
         payload = get_source_status()
-        payload["import_results"] = build_import_results(payload)
+        payload["import_status"] = "processing"
+        payload["message"] = "Fichiers uploadés avec succès. Traitement en cours..."
+        payload["uploaded_files"] = saved_files
         payload["upload_file_results"] = upload_results
+        task = asyncio.create_task(process_import_async(import_root))
+        _import_tasks.add(task)
+        task.add_done_callback(_import_tasks.discard)
         return JSONResponse(payload)
     except Exception as exc:
         shutil.rmtree(import_root, ignore_errors=True)
