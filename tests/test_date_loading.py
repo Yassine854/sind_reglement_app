@@ -19,6 +19,7 @@ from app import (
     get_dashboard_for_range,
     get_default_dashboard,
     import_folder,
+    parse_etatmarge_rows_with_diagnostics,
     parse_etatmarge_rows,
     parse_lines,
     read_text_file,
@@ -37,6 +38,7 @@ class ReglementDateLoadingTests(unittest.TestCase):
             "current_source_files": [],
             "article_lookup": {},
             "etatmarge_lookup": {},
+            "etatmarge_warnings": [],
             "all_facture_lines": [],
             "all_big_factures": [],
             "current_big_factures": [],
@@ -444,6 +446,31 @@ class ReglementDateLoadingTests(unittest.TestCase):
         self.assertEqual(lookup["STNGMABA150"], 19.0)
         self.assertEqual(lookup["ZZZ000"], 0.0)
 
+    def test_parse_etatmarge_rows_reports_missing_tva_column(self):
+        rows = [
+            ["Fournisseur", "Article", "Designation"],
+            ["BONPR", "STNGMABA150", "Test"],
+        ]
+
+        lookup, errors, warnings = parse_etatmarge_rows_with_diagnostics(rows)
+
+        self.assertEqual(lookup, {})
+        self.assertTrue(any("colonne Tva manquante" in error for error in errors))
+        self.assertEqual(warnings, [])
+
+    def test_parse_etatmarge_rows_warns_on_invalid_tva_values(self):
+        rows = [
+            ["Fournisseur", "Article", "Tva"],
+            ["BONPR", "STNGMABA150", "19,000"],
+            ["BONPR", "BADTVA01", "19,abc"],
+        ]
+
+        lookup, errors, warnings = parse_etatmarge_rows_with_diagnostics(rows)
+
+        self.assertEqual(errors, [])
+        self.assertEqual(lookup["STNGMABA150"], 19.0)
+        self.assertTrue(any("BADTVA01" in warning for warning in warnings))
+
     def test_folder_import_applies_etatmarge_tva_and_timbre(self):
         etatmarge_bytes = self._build_etatmarge_workbook_bytes(
             [
@@ -530,6 +557,58 @@ class ReglementDateLoadingTests(unittest.TestCase):
 
         self.assertTrue(status["etatmarge_found"])
         self.assertAlmostEqual(_cache["current_big_factures"][0]["total_amount"], 69.054, places=3)
+
+    def test_folder_import_returns_structured_etatmarge_error_result(self):
+        files = [
+            UploadFile(
+                filename="Fichiers Sources/REGLEMENT.txt",
+                file=BytesIO(
+                    "CESP-26-05-0000100;26-99-CAM03-00415;20260519;20260519;SFX;ESP;CLS03581;;;FAC-SFX-26-13168;71.9\n".encode(
+                        "utf-8"
+                    )
+                ),
+            ),
+            UploadFile(
+                filename="Fichiers Sources/Réglements/REGLEMENT_historique.txt",
+                file=BytesIO(
+                    "CTRT-26-04-0000078;26-99-CAM03-00410;20260430;20260430;SFX;TRT;CLT06449;;BT;FAC-SFX-26-12000;150.0\n".encode(
+                        "utf-8"
+                    )
+                ),
+            ),
+            UploadFile(
+                filename="Fichiers Sources/ARTICLE.txt",
+                file=BytesIO("CARCF1KG;Carotte fraîche 1KG;UN;UN\n".encode("utf-8")),
+            ),
+            UploadFile(
+                filename="Fichiers Sources/FACTURE.txt",
+                file=BytesIO(
+                    "FAC-SFX-26-13168;26-04-CAM03-01335;20260519;FAC;SFX;CAM03;CLF01002;CARCF1KG;KG;30;2;11.25;11.25;22.5;10.95\n".encode(
+                        "utf-8"
+                    )
+                ),
+            ),
+            UploadFile(
+                filename="Fichiers Sources/Factures/FACTURE_20260430.txt",
+                file=BytesIO(
+                    "FAC-SFX-26-12000;26-04-CAM03-01000;20260430;FAC;SFX;CAM03;CLF00999;CARCF1KG;KG;10;1;10;10;10;9\n".encode(
+                        "utf-8"
+                    )
+                ),
+            ),
+            UploadFile(
+                filename="Fichiers Sources/etatmarge.xlsx",
+                file=BytesIO(b"not-an-excel"),
+            ),
+        ]
+
+        response = asyncio.run(import_folder(files))
+        status = json.loads(response.body)
+        results_by_key = {item["key"]: item for item in status["import_results"]}
+
+        self.assertEqual(results_by_key["etatmarge"]["status"], "error")
+        self.assertEqual(results_by_key["etatmarge"]["kind"], "err")
+        self.assertIn("etatmarge.xlsx", results_by_key["etatmarge"]["message"])
 
     def test_cam_facture_detail_respects_selected_date_range(self):
         files = [
