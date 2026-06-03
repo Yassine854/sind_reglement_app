@@ -12,6 +12,7 @@ from openpyxl import Workbook
 from starlette.datastructures import UploadFile
 from app import (
     _cache,
+    build_import_results,
     file_uri_to_fs_path,
     get_cam_facture_detail,
     get_source_status,
@@ -70,6 +71,17 @@ class ReglementDateLoadingTests(unittest.TestCase):
         workbook.close()
         stream.seek(0)
         return stream.getvalue()
+
+    def _run_folder_import(self, files: list[UploadFile], process_background: bool = True):
+        with patch("app.asyncio.create_task") as mocked_create_task:
+            response = asyncio.run(import_folder(files))
+            mocked_create_task.assert_called_once()
+            import_coro = mocked_create_task.call_args.args[0]
+        if process_background:
+            asyncio.run(import_coro)
+        else:
+            import_coro.close()
+        return response
 
     def test_parse_lines_uses_reglement_date_column(self):
         text = "CTRT-26-03-0000002;26-99-CAM50-00159;20260304;20260525;SFX;TRT;CLS06386;;ATB;ACF-SFX-26-00003;188.249"
@@ -286,9 +298,11 @@ class ReglementDateLoadingTests(unittest.TestCase):
             ),
         ]
 
-        response = asyncio.run(import_folder(files))
-        status = json.loads(response.body)
+        response = self._run_folder_import(files)
+        initial_payload = json.loads(response.body)
+        status = get_source_status()
 
+        self.assertEqual(initial_payload["import_status"], "processing")
         self.assertEqual(status["source_mode"], "uploaded_folder")
         self.assertEqual(status["uploaded_root_name"], "Fichiers Sources")
         self.assertTrue(status["current_found"])
@@ -297,6 +311,29 @@ class ReglementDateLoadingTests(unittest.TestCase):
         self.assertEqual(status["history_file_count"], 1)
         self.assertEqual(_cache["coverage_start"], "2026-04-27")
         self.assertEqual(_cache["coverage_end"], "2026-05-01")
+
+    def test_background_import_marks_error_when_reload_fails(self):
+        _cache["import_context"] = {
+            "active": True,
+            "root_path": "/tmp/mock-import-root",
+            "status": "processing",
+        }
+
+        with patch("app.reload_cache", side_effect=RuntimeError("boom")):
+            asyncio.run(app_module.process_import_async("/tmp/mock-import-root"))
+
+        self.assertEqual(_cache["import_context"]["status"], "error")
+        self.assertIn("boom", _cache["import_context"]["error_message"])
+
+    def test_source_status_does_not_reload_cache_while_processing(self):
+        _cache["loaded_at"] = None
+        _cache["import_context"] = {"active": True, "status": "processing"}
+
+        with patch("app.reload_cache") as mocked_reload:
+            status = get_source_status()
+
+        mocked_reload.assert_not_called()
+        self.assertEqual(status["import_status"], "processing")
 
     def test_folder_import_reports_missing_reglements_folder(self):
         files = [
@@ -310,8 +347,8 @@ class ReglementDateLoadingTests(unittest.TestCase):
             )
         ]
 
-        response = asyncio.run(import_folder(files))
-        status = json.loads(response.body)
+        self._run_folder_import(files)
+        status = get_source_status()
 
         self.assertTrue(status["current_found"])
         self.assertFalse(status["history_found"])
@@ -344,8 +381,8 @@ class ReglementDateLoadingTests(unittest.TestCase):
             ),
         ]
 
-        response = asyncio.run(import_folder(files))
-        status = json.loads(response.body)
+        self._run_folder_import(files)
+        status = get_source_status()
 
         self.assertEqual(status["source_file_count"], 2)
         self.assertEqual(status["history_file_count"], 1)
@@ -402,8 +439,8 @@ class ReglementDateLoadingTests(unittest.TestCase):
             ),
         ]
 
-        response = asyncio.run(import_folder(files))
-        status = json.loads(response.body)
+        self._run_folder_import(files)
+        status = get_source_status()
 
         self.assertTrue(status["article_found"])
         self.assertFalse(status["etatmarge_found"])
@@ -552,8 +589,8 @@ class ReglementDateLoadingTests(unittest.TestCase):
             ),
         ]
 
-        response = asyncio.run(import_folder(files))
-        status = json.loads(response.body)
+        self._run_folder_import(files)
+        status = get_source_status()
 
         self.assertTrue(status["etatmarge_found"])
         self.assertAlmostEqual(_cache["current_big_factures"][0]["total_amount"], 69.054, places=3)
@@ -602,9 +639,9 @@ class ReglementDateLoadingTests(unittest.TestCase):
             ),
         ]
 
-        response = asyncio.run(import_folder(files))
-        status = json.loads(response.body)
-        results_by_key = {item["key"]: item for item in status["import_results"]}
+        self._run_folder_import(files)
+        status = get_source_status()
+        results_by_key = {item["key"]: item for item in build_import_results(status)}
 
         self.assertEqual(results_by_key["etatmarge"]["status"], "error")
         self.assertEqual(results_by_key["etatmarge"]["kind"], "err")
@@ -664,7 +701,7 @@ class ReglementDateLoadingTests(unittest.TestCase):
                 ),
             ),
         ]
-        asyncio.run(import_folder(files))
+        self._run_folder_import(files)
 
         response = asyncio.run(
             get_cam_facture_detail(

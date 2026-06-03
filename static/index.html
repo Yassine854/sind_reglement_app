@@ -1157,6 +1157,16 @@ function setImportState(state, opts) {
     return;
   }
 
+  if (state === 'processing') {
+    btnWrap.style.display = 'none';
+    titleEl.textContent = 'Traitement en cours\u2026';
+    pctEl.textContent = '';
+    fillEl.style.width = '100%';
+    fillEl.className = 'import-progress-fill';
+    subEl.innerHTML = '<span class="import-spinner"></span><span>' + escapeHtml(opts.message || 'Les fichiers ont été envoyés. Traitement en cours…') + '</span>';
+    return;
+  }
+
   if (state === 'success') {
     const payload = opts.payload || {};
     titleEl.textContent = 'Importation terminée';
@@ -1337,6 +1347,40 @@ function validateGuidedImportSelection() {
   return missing;
 }
 
+function sleep(ms) {
+  return new Promise(function(resolve) { setTimeout(resolve, ms); });
+}
+
+async function pollImportStatus() {
+  const maxAttempts = 30;
+  for (let attempts = 0; attempts < maxAttempts; attempts += 1) {
+    await sleep(2000);
+    const status = await loadSourceStatus();
+    if (!status) continue;
+
+    const importContext = status.import_context || {};
+    const importStatus = importContext.status || status.import_status;
+
+    if (importStatus === 'ready') {
+      setImportState('success', { payload: status });
+      await loadDefaultData();
+      return { completed: true };
+    }
+    if (importStatus === 'error') {
+      setLoading(false);
+      setImportState('error', {
+        message: importContext.error_message || status.import_error_message || 'Erreur lors du traitement en arrière-plan.',
+        payload: status,
+      });
+      return { completed: false };
+    }
+  }
+
+  setLoading(false);
+  setImportState('error', { message: 'Le traitement prend plus de temps que prévu. Actualisez la page.' });
+  return { completed: false };
+}
+
 async function importGuidedSelection() {
   const missing = validateGuidedImportSelection();
   if (missing.length) {
@@ -1383,10 +1427,17 @@ async function importGuidedSelection() {
     const payload = await uploadWithProgress(formData, function(pct) {
       setImportState('uploading', { pct: pct });
     });
-    setImportState('success', { payload: payload });
-    updateSourcePanel(payload);
-    await loadDefaultData();
-    imported = true;
+    if (payload && payload.import_status === 'processing') {
+      setImportState('processing', { message: payload.message });
+      updateSourcePanel(payload);
+      const pollResult = await pollImportStatus();
+      imported = !!(pollResult && pollResult.completed);
+    } else {
+      setImportState('success', { payload: payload });
+      updateSourcePanel(payload);
+      await loadDefaultData();
+      imported = true;
+    }
   } catch (err) {
     setLoading(false);
     setImportState('error', {
