@@ -30,8 +30,21 @@ TYPE_MAP = {
 VALID_SITES = {"SFX", "MAH", "NAB", "SSE", "TUN"}
 
 # ── Upload configuration ───────────────────────────────────────────────────────
-MAX_UPLOAD_SIZE = int(os.environ.get("MAX_UPLOAD_SIZE", 100 * 1024 * 1024))  # 100 MB
+MAX_TOTAL_UPLOAD_SIZE = int(os.environ.get("MAX_TOTAL_UPLOAD_SIZE", 500 * 1024 * 1024))  # 500 MB total
+MAX_SINGLE_FILE_SIZE = int(os.environ.get("MAX_SINGLE_FILE_SIZE", 100 * 1024 * 1024))   # 100 MB per file
 CHUNK_SIZE = int(os.environ.get("CHUNK_SIZE", 8192))  # 8 KB
+
+
+def format_size(bytes_size: int) -> str:
+    """Format bytes to human-readable size (Ko, Mo, Go)."""
+    if bytes_size < 1024:
+        return f"{bytes_size} octets"
+    elif bytes_size < 1024 * 1024:
+        return f"{bytes_size / 1024:.1f} Ko"
+    elif bytes_size < 1024 * 1024 * 1024:
+        return f"{bytes_size / (1024 * 1024):.1f} Mo"
+    else:
+        return f"{bytes_size / (1024 * 1024 * 1024):.2f} Go"
 
 # ── Source configuration ───────────────────────────────────────────────────────
 # Folder upload/import is the primary workflow. These env vars remain as an
@@ -1726,6 +1739,27 @@ async def import_folder(files: list[UploadFile] = File(...)):
             status_code=400,
         )
 
+    # Pre-validate total upload size before processing any files
+    total_size = sum(upload.size or 0 for upload in files)
+
+    if total_size > MAX_TOTAL_UPLOAD_SIZE:
+        return JSONResponse(
+            {
+                "detail": (
+                    f"La taille totale des fichiers ({format_size(total_size)}) "
+                    f"dépasse la limite autorisée ({format_size(MAX_TOTAL_UPLOAD_SIZE)}). "
+                    f"Réduisez le nombre de fichiers historiques et réessayez."
+                ),
+                "error": {
+                    "code": "UPLOAD_SIZE_EXCEEDED",
+                    "total_size": total_size,
+                    "max_size": MAX_TOTAL_UPLOAD_SIZE,
+                    "file_count": len(files),
+                },
+            },
+            status_code=413,
+        )
+
     import_root = tempfile.mkdtemp(prefix="sind_reglement_import_")
     uploaded_root_name: str | None = None
     saved_files = 0
@@ -1805,10 +1839,10 @@ async def import_folder(files: list[UploadFile] = File(...)):
                     if not chunk:
                         break
                     file_size += len(chunk)
-                    if file_size > MAX_UPLOAD_SIZE:
+                    if file_size > MAX_SINGLE_FILE_SIZE:
                         raise ValueError(
-                            f"Fichier '{raw_rel_path}' dépasse la taille maximale autorisée "
-                            f"({MAX_UPLOAD_SIZE // (1024 * 1024)} Mo)."
+                            f"Le fichier '{raw_rel_path}' ({format_size(file_size)}) "
+                            f"dépasse la limite par fichier ({format_size(MAX_SINGLE_FILE_SIZE)})."
                         )
                     await out.write(chunk)
             saved_files += 1
