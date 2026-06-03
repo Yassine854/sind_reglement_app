@@ -652,7 +652,7 @@
   <div class="import-card">
     <div style="flex:1;min-width:0;">
       <div class="import-title">Importer Fichiers Sources</div>
-      <div class="import-sub">Import guidé rapide : sélectionnez uniquement les fichiers requis <strong>REGLEMENT.txt</strong>, <strong>Réglements</strong>, <strong>FACTURE</strong>, <strong>Factures</strong> et <strong>ARTICLE</strong>.</div>
+      <div class="import-sub">Import guidé rapide : sélectionnez les fichiers requis <strong>REGLEMENT.txt</strong>, <strong>Réglements</strong>, <strong>FACTURE</strong>, <strong>Factures</strong>, <strong>ARTICLE</strong> et optionnellement <strong>etatmarge</strong>.</div>
       <div class="guided-grid">
         <div class="guided-item">
           <div class="guided-item-head">
@@ -699,6 +699,15 @@
           <button class="upload-btn tiny" type="button" data-picker="input-article">Choisir le fichier</button>
           <div class="guided-item-status" id="status-article">Aucun fichier sélectionné.</div>
         </div>
+        <div class="guided-item">
+          <div class="guided-item-head">
+            <div class="guided-item-title">ETATMARGE</div>
+            <span class="guided-tag ok" id="tag-etatmarge">Optionnel</span>
+          </div>
+          <div class="guided-item-sub">Fichier Excel avec colonnes Article / Tva.</div>
+          <button class="upload-btn tiny" type="button" data-picker="input-etatmarge">Choisir le fichier</button>
+          <div class="guided-item-status" id="status-etatmarge">Aucun fichier sélectionné.</div>
+        </div>
       </div>
       <div id="import-progress-zone" class="import-progress-zone" style="display:none">
         <div class="import-progress-header">
@@ -718,6 +727,7 @@
       <input type="file" id="input-current-facture" style="display:none">
       <input type="file" id="input-history-factures" multiple style="display:none">
       <input type="file" id="input-article" style="display:none">
+      <input type="file" id="input-etatmarge" style="display:none">
       <button class="upload-btn" id="import-folder-btn" type="button">Importer les fichiers requis</button>
     </div>
   </div>
@@ -970,6 +980,7 @@ const historyReglementsInput = document.getElementById('input-history-reglements
 const currentFactureInput = document.getElementById('input-current-facture');
 const historyFacturesInput = document.getElementById('input-history-factures');
 const articleInput = document.getElementById('input-article');
+const etatmargeInput = document.getElementById('input-etatmarge');
 const camDetailView = document.getElementById('cam-detail-view');
 let currentDashboardState = { mode: 'default', dateRange: null };
 const selectedGuidedSources = {
@@ -978,6 +989,7 @@ const selectedGuidedSources = {
   currentFacture: null,
   historyFactures: [],
   article: null,
+  etatmarge: null,
 };
 
 // ── UI helpers ────────────────────────────────────────────────────────────────
@@ -1053,6 +1065,10 @@ function updateSourcePanel(status) {
   tags.push({
     text: status.article_found ? 'ARTICLE détecté' : 'ARTICLE manquant',
     kind: status.article_found ? 'ok' : 'warn'
+  });
+  tags.push({
+    text: status.etatmarge_found ? 'etatmarge détecté' : 'etatmarge non fourni',
+    kind: status.etatmarge_found ? 'ok' : 'warn'
   });
   tags.push({
     text: status.facture_found ? 'FACTURE détecté' : 'FACTURE manquant',
@@ -1166,6 +1182,10 @@ function setImportState(state, opts) {
       kind: payload.article_found ? 'ok' : 'warn'
     });
     tagItems.push({
+      text: payload.etatmarge_found ? 'etatmarge d\u00e9tect\u00e9' : 'etatmarge non fourni',
+      kind: payload.etatmarge_found ? 'ok' : 'warn'
+    });
+    tagItems.push({
       text: payload.facture_found ? 'FACTURE d\u00e9tect\u00e9' : 'FACTURE introuvable',
       kind: payload.facture_found ? 'ok' : 'warn'
     });
@@ -1244,6 +1264,10 @@ function refreshGuidedImportSummary() {
   setGuidedStatus('current-facture', !!selectedGuidedSources.currentFacture, describeSelection(selectedGuidedSources.currentFacture ? [selectedGuidedSources.currentFacture] : []));
   setGuidedStatus('history-factures', selectedGuidedSources.historyFactures.length > 0, describeSelection(selectedGuidedSources.historyFactures));
   setGuidedStatus('article', !!selectedGuidedSources.article, describeSelection(selectedGuidedSources.article ? [selectedGuidedSources.article] : []));
+  setGuidedStatus('etatmarge', true, describeSelection(selectedGuidedSources.etatmarge ? [selectedGuidedSources.etatmarge] : []));
+  const etatmargeTag = document.getElementById('tag-etatmarge');
+  etatmargeTag.className = 'guided-tag ' + (selectedGuidedSources.etatmarge ? 'ok' : 'warn');
+  etatmargeTag.textContent = selectedGuidedSources.etatmarge ? 'Prêt' : 'Optionnel';
 }
 
 function clearGuidedInputs() {
@@ -1252,11 +1276,13 @@ function clearGuidedInputs() {
   currentFactureInput.value = '';
   historyFacturesInput.value = '';
   articleInput.value = '';
+  etatmargeInput.value = '';
   selectedGuidedSources.currentReglement = null;
   selectedGuidedSources.historyReglements = [];
   selectedGuidedSources.currentFacture = null;
   selectedGuidedSources.historyFactures = [];
   selectedGuidedSources.article = null;
+  selectedGuidedSources.etatmarge = null;
   refreshGuidedImportSummary();
 }
 
@@ -1291,6 +1317,9 @@ async function importGuidedSelection() {
     formData.append('files', file, 'Fichiers Sources/Factures/' + file.name);
   });
   formData.append('files', selectedGuidedSources.article, 'Fichiers Sources/ARTICLE');
+  if (selectedGuidedSources.etatmarge) {
+    formData.append('files', selectedGuidedSources.etatmarge, 'Fichiers Sources/etatmarge.xlsx');
+  }
 
   let imported = false;
   try {
@@ -1399,6 +1428,10 @@ historyFacturesInput.addEventListener('change', function() {
 });
 articleInput.addEventListener('change', function() {
   selectedGuidedSources.article = (articleInput.files && articleInput.files[0]) || null;
+  refreshGuidedImportSummary();
+});
+etatmargeInput.addEventListener('change', function() {
+  selectedGuidedSources.etatmarge = (etatmargeInput.files && etatmargeInput.files[0]) || null;
   refreshGuidedImportSummary();
 });
 

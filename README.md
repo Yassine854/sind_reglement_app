@@ -15,7 +15,7 @@ Puis ouvrir **http://localhost:8000**
 1. Importez le dossier racine **Fichiers Sources** depuis l'interface.
    - L'application recherche automatiquement `REGLEMENT.txt` (mois courant).
    - L'application recherche automatiquement le sous-dossier `Réglements` (historique) et ignore les fichiers non pertinents.
-   - L'application détecte aussi `ARTICLE`, `FACTURE` et le sous-dossier `Factures` pour enrichir les analyses CAM avec les ventes facturées.
+   - L'application détecte aussi `ARTICLE`, `FACTURE`, le sous-dossier `Factures` et optionnellement `etatmarge(.xlsx)` pour enrichir les analyses CAM avec les ventes facturées.
 2. Les données sont chargées en mémoire après import pour éviter une relecture à chaque filtre.
 3. Vous pouvez filtrer une période avec les champs **Du / Au** :
    - le filtre s'applique sur l'ensemble des données stockées (mensuel + historiques)
@@ -25,6 +25,7 @@ Puis ouvrir **http://localhost:8000**
    - **Par type** : Espèces (CESP), Traite (CTRT), Chèque (CCHQR)
    - **Classement des CAMs** : rang, montant, site d'appartenance, répartition par type
    - **Vue CAM factures** : big factures, total vente et articles plus vendus sur la période filtrée
+     - total big facture = somme base + TVA article (depuis `etatmarge`) + timbre fixe `1 DT`
    - **Par site** : totaux regroupés par site (SFX, MAH, NAB, SSE, TUN), y compris les lignes sans CAM explicite si le site est présent
 ### Variables d'environnement optionnelles
 

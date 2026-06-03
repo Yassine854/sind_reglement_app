@@ -14,6 +14,7 @@ from urllib.parse import quote, unquote, urlsplit
 from fastapi import FastAPI, File, Query, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from openpyxl import load_workbook
 
 app = FastAPI()
 logger = logging.getLogger(__name__)
@@ -50,6 +51,7 @@ _cache: dict = {
     "source_files": [],      # All loaded source file paths
     "current_source_files": [],  # Only the current-month source file(s)
     "article_lookup": {},
+    "etatmarge_lookup": {},
     "all_facture_lines": [],
     "all_big_factures": [],
     "current_big_factures": [],
@@ -135,10 +137,21 @@ def is_named_source_file(name: str, expected_name: str) -> bool:
     return normalized == normalize_token(expected_name) and ext.casefold() in {"", ".txt", ".csv"}
 
 
+def is_named_excel_source_file(name: str, expected_name: str) -> bool:
+    base, ext = os.path.splitext(name or "")
+    normalized = normalize_token(base or name)
+    return normalized == normalize_token(expected_name) and ext.casefold() in {"", ".txt", ".csv", ".xlsx", ".xlsm"}
+
+
+def normalize_article_code(value: str | None) -> str:
+    return (value or "").strip().upper()
+
+
 def discover_uploaded_sources(root_dir: str) -> dict:
     current_file: str | None = None
     history_dir: str | None = None
     article_file: str | None = None
+    etatmarge_file: str | None = None
     current_facture_file: str | None = None
     factures_dir: str | None = None
 
@@ -155,11 +168,13 @@ def discover_uploaded_sources(root_dir: str) -> dict:
             history_dir = candidate
         if not article_file and os.path.isfile(candidate) and is_named_source_file(name, "ARTICLE"):
             article_file = candidate
+        if not etatmarge_file and os.path.isfile(candidate) and is_named_excel_source_file(name, "etatmarge"):
+            etatmarge_file = candidate
         if not current_facture_file and os.path.isfile(candidate) and is_named_source_file(name, "FACTURE"):
             current_facture_file = candidate
         if not factures_dir and os.path.isdir(candidate) and is_factures_dir_name(name):
             factures_dir = candidate
-        if current_file and history_dir and article_file and current_facture_file and factures_dir:
+        if current_file and history_dir and article_file and current_facture_file and factures_dir and etatmarge_file:
             break
 
     warnings: list[str] = []
@@ -174,11 +189,13 @@ def discover_uploaded_sources(root_dir: str) -> dict:
         "current_path": current_file or "",
         "history_path": history_dir or "",
         "article_path": article_file or "",
+        "etatmarge_path": etatmarge_file or "",
         "facture_path": current_facture_file or "",
         "factures_path": factures_dir or "",
         "current_found": bool(current_file),
         "history_found": bool(history_dir),
         "article_found": bool(article_file),
+        "etatmarge_found": bool(etatmarge_file),
         "facture_found": bool(current_facture_file),
         "factures_found": bool(factures_dir),
         "warnings": warnings,
@@ -615,6 +632,96 @@ def load_article_lookup(path: str) -> tuple[dict[str, str], list[str]]:
     return parse_article_lines(text or ""), []
 
 
+def parse_decimal(value: object) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        return float(text.replace(" ", "").replace(",", "."))
+    except ValueError:
+        return None
+
+
+def parse_etatmarge_rows(rows: list[list[object]]) -> dict[str, float]:
+    header_index = -1
+    article_index = -1
+    tva_index = -1
+
+    for idx, row in enumerate(rows):
+        normalized_cells = [normalize_token(str(cell)) if cell is not None else "" for cell in row]
+        has_article = "article" in normalized_cells
+        has_tva = "tva" in normalized_cells
+        if has_article and has_tva:
+            header_index = idx
+            article_index = normalized_cells.index("article")
+            tva_index = normalized_cells.index("tva")
+            break
+
+    if header_index < 0 or article_index < 0 or tva_index < 0:
+        return {}
+
+    lookup: dict[str, float] = {}
+    for row in rows[header_index + 1 :]:
+        if max(article_index, tva_index) >= len(row):
+            continue
+        article_code = normalize_article_code(str(row[article_index]) if row[article_index] is not None else "")
+        if not article_code:
+            continue
+        tva_rate = parse_decimal(row[tva_index])
+        if tva_rate is None:
+            continue
+        lookup[article_code] = tva_rate
+    return lookup
+
+
+def parse_etatmarge_text(text: str) -> dict[str, float]:
+    rows: list[list[object]] = []
+    for line in (text or "").splitlines():
+        raw_line = line.strip()
+        if not raw_line:
+            continue
+        if "\t" in raw_line:
+            parts = [part.strip() for part in raw_line.split("\t")]
+        elif ";" in raw_line:
+            parts = [part.strip() for part in raw_line.split(";")]
+        elif "|" in raw_line:
+            parts = [part.strip() for part in raw_line.split("|")]
+        else:
+            continue
+        rows.append(parts)
+    return parse_etatmarge_rows(rows)
+
+
+def load_etatmarge_lookup(path: str) -> tuple[dict[str, float], list[str]]:
+    if not path:
+        return {}, []
+
+    _, ext = os.path.splitext(path)
+    ext = ext.casefold()
+    try:
+        if ext in {".xlsx", ".xlsm"}:
+            workbook = load_workbook(path, read_only=True, data_only=True)
+            sheet = workbook.active
+            rows = [list(row) for row in sheet.iter_rows(values_only=True)]
+            workbook.close()
+            lookup = parse_etatmarge_rows(rows)
+        else:
+            text, error = read_text_file(path)
+            if error:
+                return {}, [error]
+            lookup = parse_etatmarge_text(text or "")
+    except Exception as exc:
+        return {}, [f"Impossible de lire etatmarge ({path}) : {exc.__class__.__name__}"]
+
+    if not lookup:
+        return {}, [f"Le fichier etatmarge est chargé mais aucune colonne Article/Tva exploitable n'a été trouvée ({path})."]
+    return lookup, []
+
+
 def list_plain_files(directory: str) -> tuple[list[str], list[str]]:
     lookup_dir = file_uri_to_fs_path(directory) if is_file_uri(directory) else directory
 
@@ -680,7 +787,8 @@ def get_facture_bounds(rows: list[dict]) -> tuple[date | None, date | None]:
     return min(dates), max(dates)
 
 
-def build_big_factures(rows: list[dict]) -> list[dict]:
+def build_big_factures(rows: list[dict], etatmarge_lookup: dict[str, float] | None = None) -> list[dict]:
+    tva_lookup = etatmarge_lookup or {}
     grouped: dict[str, list[dict]] = defaultdict(list)
     for row in rows:
         facture_number = row.get("facture_number")
@@ -690,7 +798,16 @@ def build_big_factures(rows: list[dict]) -> list[dict]:
     big_factures: list[dict] = []
     for facture_number, facture_rows in grouped.items():
         first = facture_rows[0]
-        total_amount = round(sum(line.get("amount", 0.0) for line in facture_rows), 3)
+        base_total = sum(line.get("amount", 0.0) for line in facture_rows)
+        tva_total = 0.0
+        for line in facture_rows:
+            article_code = normalize_article_code(line.get("article_code"))
+            tva_rate = tva_lookup.get(article_code, 0.0)
+            if not tva_rate:
+                continue
+            tva_total += line.get("amount", 0.0) * tva_rate / 100.0
+        timbre = 1.0
+        total_amount = round(base_total + tva_total + timbre, 3)
         total_quantity = round(sum(line.get("quantity", 0.0) for line in facture_rows), 3)
         big_factures.append(
             {
@@ -703,6 +820,9 @@ def build_big_factures(rows: list[dict]) -> list[dict]:
                 "reference": first.get("reference"),
                 "line_count": len(facture_rows),
                 "total_amount": total_amount,
+                "base_total": round(base_total, 3),
+                "tva_total": round(tva_total, 3),
+                "timbre": timbre,
                 "total_quantity": total_quantity,
                 "articles_count": len({line.get("article_code") for line in facture_rows if line.get("article_code")}),
                 "lines": facture_rows,
@@ -915,6 +1035,7 @@ def reload_cache() -> None:
     current_path = (import_context.get("current_path") if using_uploaded_folder else DEFAULT_CURRENT_REGLEMENT_FILE) or ""
     history_dir = (import_context.get("history_path") if using_uploaded_folder else DEFAULT_HISTORY_REGLEMENTS_DIR) or ""
     article_path = (import_context.get("article_path") if using_uploaded_folder else "") or ""
+    etatmarge_path = (import_context.get("etatmarge_path") if using_uploaded_folder else "") or ""
     facture_path = (import_context.get("facture_path") if using_uploaded_folder else "") or ""
     factures_dir = (import_context.get("factures_path") if using_uploaded_folder else "") or ""
     warnings: list[str] = []
@@ -953,6 +1074,7 @@ def reload_cache() -> None:
             "source_files": [],
             "current_source_files": [],
             "article_lookup": {},
+            "etatmarge_lookup": {},
             "all_facture_lines": [],
             "all_big_factures": [],
             "current_big_factures": [],
@@ -1000,6 +1122,8 @@ def reload_cache() -> None:
     coverage_start, coverage_end = get_rows_bounds(all_rows)
     article_lookup, article_warnings = load_article_lookup(article_path)
     warnings.extend(article_warnings)
+    etatmarge_lookup, etatmarge_warnings = load_etatmarge_lookup(etatmarge_path)
+    warnings.extend(etatmarge_warnings)
 
     facture_history_files: list[str] = []
     if factures_dir:
@@ -1028,8 +1152,8 @@ def reload_cache() -> None:
         warnings.extend(facture_history_warnings)
 
     all_facture_lines = facture_history_rows + facture_current_rows
-    current_big_factures = build_big_factures(facture_current_rows)
-    all_big_factures = build_big_factures(all_facture_lines)
+    current_big_factures = build_big_factures(facture_current_rows, etatmarge_lookup)
+    all_big_factures = build_big_factures(all_facture_lines, etatmarge_lookup)
     facture_coverage_start, facture_coverage_end = get_facture_bounds(all_facture_lines)
 
     _cache.update({
@@ -1038,6 +1162,7 @@ def reload_cache() -> None:
         "source_files": all_sources,
         "current_source_files": current_sources,
         "article_lookup": article_lookup,
+        "etatmarge_lookup": etatmarge_lookup,
         "all_facture_lines": all_facture_lines,
         "all_big_factures": all_big_factures,
         "current_big_factures": current_big_factures,
@@ -1076,6 +1201,7 @@ def get_source_status() -> dict:
     current_source = import_context.get("current_path") if using_uploaded_folder else DEFAULT_CURRENT_REGLEMENT_FILE
     history_source = import_context.get("history_path") if using_uploaded_folder else DEFAULT_HISTORY_REGLEMENTS_DIR
     article_source = import_context.get("article_path") if using_uploaded_folder else ""
+    etatmarge_source = import_context.get("etatmarge_path") if using_uploaded_folder else ""
     facture_source = import_context.get("facture_path") if using_uploaded_folder else ""
     factures_source = import_context.get("factures_path") if using_uploaded_folder else ""
     return {
@@ -1106,11 +1232,13 @@ def get_source_status() -> dict:
         "expected_current_name": "REGLEMENT.txt",
         "expected_history_name": "Réglements",
         "expected_article_name": "ARTICLE",
+        "expected_etatmarge_name": "etatmarge",
         "expected_facture_name": "FACTURE",
         "expected_factures_name": "Factures",
         "current_found": import_context.get("current_found", bool(current_source)),
         "history_found": import_context.get("history_found", bool(history_source)),
         "article_found": import_context.get("article_found", bool(article_source)),
+        "etatmarge_found": import_context.get("etatmarge_found", bool(etatmarge_source)),
         "facture_found": import_context.get("facture_found", bool(facture_source)),
         "factures_found": import_context.get("factures_found", bool(factures_source)),
         "facture_coverage_start": cache.get("facture_coverage_start"),
@@ -1436,12 +1564,14 @@ async def import_folder(files: list[UploadFile] = File(...)):
         is_monthly_file = filename.casefold() == "reglement.txt"
         is_history_file = in_reglements_dir and is_reglement_text_filename(filename)
         is_article_file = is_root_level and is_named_source_file(filename, "ARTICLE")
+        is_etatmarge_file = is_root_level and is_named_excel_source_file(filename, "etatmarge")
         is_current_facture_file = is_root_level and is_named_source_file(filename, "FACTURE")
         is_history_facture_file = in_factures_dir
         if not (
             is_monthly_file
             or is_history_file
             or is_article_file
+            or is_etatmarge_file
             or is_current_facture_file
             or is_history_facture_file
         ):
