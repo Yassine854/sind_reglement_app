@@ -1775,7 +1775,12 @@ def build_upload_session_payload(session: dict) -> dict:
     elif session.get("status") in {"processing", "complete"}:
         upload_progress = 100
 
-    processing_percent = 100 if session.get("status") == "complete" else (95 if session.get("status") == "processing" else upload_progress)
+    if session.get("status") == "complete":
+        processing_percent = 100
+    elif session.get("status") == "processing":
+        processing_percent = 95
+    else:
+        processing_percent = upload_progress
     return {
         "upload_id": session.get("upload_id"),
         "status": session.get("status", "uploading"),
@@ -1879,7 +1884,7 @@ async def import_folder(
         )
 
     cleanup_upload_sessions()
-    upload_id = (upload_id or str(uuid.uuid4())).strip() or str(uuid.uuid4())
+    upload_id = upload_id.strip() if upload_id else str(uuid.uuid4())
     total_bytes = sum(int(getattr(upload, "size", 0) or 0) for upload in files)
     import_root = tempfile.mkdtemp(prefix="sind_reglement_import_")
     session = {

@@ -1029,7 +1029,7 @@ function escapeHtml(value) {
 function formatByteSize(bytes) {
   const value = Number(bytes || 0);
   if (!value) return '0 octet';
-  if (value < 1024) return value + ' octets';
+  if (value < 1024) return value + (value === 1 ? ' octet' : ' octets');
   if (value < 1024 * 1024) return (value / 1024).toFixed(1) + ' Ko';
   if (value < 1024 * 1024 * 1024) return (value / (1024 * 1024)).toFixed(1) + ' Mo';
   return (value / (1024 * 1024 * 1024)).toFixed(2) + ' Go';
@@ -1848,7 +1848,8 @@ async function init() {
   if (importContext.status === 'processing' && importContext.upload_id) {
     setImportState('processing', { pct: 95, message: 'Reprise du suivi de l’import en cours…' });
     currentUploadPollToken += 1;
-    pollImportStatus(importContext.upload_id, currentUploadPollToken);
+    await pollImportStatus(importContext.upload_id, currentUploadPollToken);
+    return;
   }
   await loadDefaultData();
 }
