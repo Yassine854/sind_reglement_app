@@ -991,6 +991,7 @@ const selectedGuidedSources = {
   article: null,
   etatmarge: null,
 };
+let currentUploadPollToken = 0;
 
 // ── UI helpers ────────────────────────────────────────────────────────────────
 function setLoading(isLoading) {
@@ -1023,6 +1024,22 @@ function hideCamDetail() {
 
 function escapeHtml(value) {
   return (value || '').replace(/[&<>"'`]/g, match => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;', '`': '&#96;' }[match]));
+}
+
+function formatByteSize(bytes) {
+  const value = Number(bytes || 0);
+  if (!value) return '0 octet';
+  if (value < 1024) return value + (value === 1 ? ' octet' : ' octets');
+  if (value < 1024 * 1024) return (value / 1024).toFixed(1) + ' Ko';
+  if (value < 1024 * 1024 * 1024) return (value / (1024 * 1024)).toFixed(1) + ' Mo';
+  return (value / (1024 * 1024 * 1024)).toFixed(2) + ' Go';
+}
+
+function createUploadId() {
+  if (window.crypto && typeof window.crypto.randomUUID === 'function') {
+    return window.crypto.randomUUID();
+  }
+  return 'upload-' + Date.now() + '-' + Math.random().toString(16).slice(2);
 }
 
 function updateSourcePanel(status) {
@@ -1153,15 +1170,15 @@ function setImportState(state, opts) {
     pctEl.textContent = p + '%';
     fillEl.style.width = p + '%';
     fillEl.className = 'import-progress-fill';
-    subEl.innerHTML = '<span class="import-spinner"></span><span>Envoi des fichiers requis\u2026</span>';
+    subEl.innerHTML = '<span class="import-spinner"></span><span>' + escapeHtml(opts.message || 'Envoi des fichiers requis…') + '</span>';
     return;
   }
 
   if (state === 'processing') {
     btnWrap.style.display = 'none';
     titleEl.textContent = 'Traitement en cours\u2026';
-    pctEl.textContent = '';
-    fillEl.style.width = '100%';
+    pctEl.textContent = opts.pct ? (opts.pct + '%') : '';
+    fillEl.style.width = (opts.pct || 95) + '%';
     fillEl.className = 'import-progress-fill';
     subEl.innerHTML = '<span class="import-spinner"></span><span>' + escapeHtml(opts.message || 'Les fichiers ont été envoyés. Traitement en cours…') + '</span>';
     return;
@@ -1205,6 +1222,16 @@ function setImportState(state, opts) {
 }
 
 function buildImportTagItems(payload) {
+  if (payload && Array.isArray(payload.errors) && payload.errors.length) {
+    return payload.errors.map(function(item) {
+      const filePart = item.file ? (' [' + item.file + ']') : '';
+      return {
+        text: 'Erreur' + filePart + ' — ' + (item.message || 'Échec de traitement.'),
+        kind: 'err',
+      };
+    });
+  }
+
   if (payload && Array.isArray(payload.import_results) && payload.import_results.length) {
     return payload.import_results.map(function(result) {
       const filePart = result.file ? (' [' + result.file + ']') : '';
@@ -1246,13 +1273,14 @@ function buildImportTagItems(payload) {
   return tagItems;
 }
 
-function uploadWithProgress(formData, onProgress) {
+function uploadWithProgress(formData, uploadId, onProgress) {
   return new Promise(function(resolve, reject) {
     var xhr = new XMLHttpRequest();
-    xhr.open('POST', '/api/import-folder');
-    xhr.timeout = 25000;
+    xhr.open('POST', '/api/import-folder?upload_id=' + encodeURIComponent(uploadId));
     xhr.upload.addEventListener('progress', function(e) {
-      if (e.lengthComputable) onProgress(Math.round(e.loaded / e.total * 100));
+      if (!onProgress) return;
+      var pct = e.lengthComputable ? Math.round(e.loaded / e.total * 100) : 0;
+      onProgress({ pct: pct, loaded: e.loaded || 0, total: e.total || 0 });
     });
     xhr.addEventListener('load', function() {
       var data = null;
@@ -1290,7 +1318,6 @@ function uploadWithProgress(formData, onProgress) {
     });
     xhr.addEventListener('error', function() { reject({ message: "Erreur réseau lors de l'import." }); });
     xhr.addEventListener('abort', function() { reject({ message: 'Import annulé.' }); });
-    xhr.addEventListener('timeout', function() { reject({ message: "L'import a expiré (délai dépassé). Vérifiez la taille des fichiers et réessayez." }); });
     xhr.send(formData);
   });
 }
@@ -1351,33 +1378,74 @@ function sleep(ms) {
   return new Promise(function(resolve) { setTimeout(resolve, ms); });
 }
 
-async function pollImportStatus() {
-  const maxAttempts = 30;
-  for (let attempts = 0; attempts < maxAttempts; attempts += 1) {
-    await sleep(2000);
-    const status = await loadSourceStatus();
-    if (!status) continue;
+async function fetchImportStatus(uploadId) {
+  const res = await fetch('/api/import-status/' + encodeURIComponent(uploadId));
+  const data = await res.json();
+  if (!res.ok) {
+    throw new Error(data.detail || "Impossible de récupérer l'état de l'import.");
+  }
+  return data;
+}
 
-    const importContext = status.import_context || {};
-    const importStatus = importContext.status || status.import_status;
+function describeUploadProgress(progress) {
+  const loaded = formatByteSize(progress.loaded);
+  const total = progress.total ? (' / ' + formatByteSize(progress.total)) : '';
+  return 'Envoi des fichiers… ' + loaded + total;
+}
 
-    if (importStatus === 'ready') {
-      setImportState('success', { payload: status });
-      await loadDefaultData();
-      return { completed: true };
+function describeSessionError(payload) {
+  if (payload && Array.isArray(payload.errors) && payload.errors.length) {
+    return payload.errors.map(function(item) {
+      return item.file ? (item.file + ' — ' + item.message) : item.message;
+    }).join(' | ');
+  }
+  return (payload && payload.message) || "Une erreur est survenue pendant l'import.";
+}
+
+async function pollImportStatus(uploadId, token) {
+  while (token === currentUploadPollToken) {
+    await sleep(500);
+    let payload = null;
+    try {
+      payload = await fetchImportStatus(uploadId);
+    } catch (err) {
+      continue;
     }
-    if (importStatus === 'error') {
+
+    if (payload.status === 'uploading') {
+      setImportState('uploading', {
+        pct: Math.max(5, payload.upload_progress || 0),
+        message: payload.message || 'Envoi des fichiers…',
+      });
+      continue;
+    }
+
+    if (payload.status === 'processing') {
+      setImportState('processing', {
+        pct: payload.processing_progress || 95,
+        message: payload.message || 'Analyse des fichiers importés…',
+      });
+      continue;
+    }
+
+    if (payload.status === 'complete') {
+      const sourceStatus = await loadSourceStatus();
+      if (sourceStatus) updateSourcePanel(sourceStatus);
+      setImportState('success', { payload: payload });
+      await loadDefaultData();
+      return { completed: true, payload: payload };
+    }
+
+    if (payload.status === 'error') {
       setLoading(false);
       setImportState('error', {
-        message: importContext.error_message || status.import_error_message || 'Erreur lors du traitement en arrière-plan.',
-        payload: status,
+        message: describeSessionError(payload),
+        payload: payload,
       });
-      return { completed: false };
+      return { completed: false, payload: payload };
     }
   }
 
-  setLoading(false);
-  setImportState('error', { message: 'Le traitement prend plus de temps que prévu. Actualisez la page.' });
   return { completed: false };
 }
 
@@ -1385,22 +1453,6 @@ async function importGuidedSelection() {
   const missing = validateGuidedImportSelection();
   if (missing.length) {
     setImportState('error', { message: 'Import incomplet. Fichiers requis manquants : ' + missing.join(', ') + '.' });
-    return;
-  }
-
-  const MAX_CLIENT_UPLOAD_SIZE = 500 * 1024 * 1024; // 500 MB
-  const allFiles = [
-    selectedGuidedSources.currentReglement,
-    ...selectedGuidedSources.historyReglements,
-    selectedGuidedSources.currentFacture,
-    ...selectedGuidedSources.historyFactures,
-    selectedGuidedSources.article,
-    selectedGuidedSources.etatmarge,
-  ].filter(Boolean);
-  const totalSize = allFiles.reduce(function(sum, f) { return sum + f.size; }, 0);
-  if (totalSize > MAX_CLIENT_UPLOAD_SIZE) {
-    var sizeMo = (totalSize / (1024 * 1024)).toFixed(1);
-    setImportState('error', { message: 'La taille totale des fichiers (' + sizeMo + ' Mo) dépasse la limite autorisée (500 Mo). Réduisez le nombre de fichiers historiques et réessayez.' });
     return;
   }
 
@@ -1423,22 +1475,32 @@ async function importGuidedSelection() {
   }
 
   let imported = false;
+  const uploadId = createUploadId();
+  currentUploadPollToken += 1;
+  const pollToken = currentUploadPollToken;
   try {
-    const payload = await uploadWithProgress(formData, function(pct) {
-      setImportState('uploading', { pct: pct });
+    const payload = await uploadWithProgress(formData, uploadId, function(progress) {
+      setImportState('uploading', {
+        pct: progress.pct,
+        message: describeUploadProgress(progress),
+      });
     });
-    if (payload && payload.import_status === 'processing') {
-      setImportState('processing', { message: payload.message });
-      updateSourcePanel(payload);
-      const pollResult = await pollImportStatus();
+    if (payload && (payload.status === 'processing' || payload.status === 'uploading')) {
+      setImportState('processing', {
+        pct: payload.processing_progress || 95,
+        message: payload.message || 'Analyse des fichiers importés…',
+      });
+      const pollResult = await pollImportStatus(payload.upload_id || uploadId, pollToken);
       imported = !!(pollResult && pollResult.completed);
     } else {
       setImportState('success', { payload: payload });
-      updateSourcePanel(payload);
+      const sourceStatus = await loadSourceStatus();
+      if (sourceStatus) updateSourcePanel(sourceStatus);
       await loadDefaultData();
       imported = true;
     }
   } catch (err) {
+    currentUploadPollToken += 1;
     setLoading(false);
     setImportState('error', {
       message: (err && err.message) || "Échec de l'import des fichiers.",
@@ -1781,7 +1843,14 @@ function switchTab(name) {
 // ── Page load ─────────────────────────────────────────────────────────────────
 async function init() {
   refreshGuidedImportSummary();
-  await loadSourceStatus();
+  const status = await loadSourceStatus();
+  const importContext = (status && status.import_context) || {};
+  if (importContext.status === 'processing' && importContext.upload_id) {
+    setImportState('processing', { pct: 95, message: 'Reprise du suivi de l’import en cours…' });
+    currentUploadPollToken += 1;
+    await pollImportStatus(importContext.upload_id, currentUploadPollToken);
+    return;
+  }
   await loadDefaultData();
 }
 

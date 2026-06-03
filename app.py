@@ -12,6 +12,7 @@ import tempfile
 import time
 import unicodedata
 from urllib.parse import quote, unquote, urlsplit
+import uuid
 
 import aiofiles
 from fastapi import FastAPI, File, Query, Request, UploadFile
@@ -21,6 +22,11 @@ from openpyxl import load_workbook
 
 app = FastAPI()
 logger = logging.getLogger(__name__)
+if not logging.getLogger().handlers:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 TYPE_MAP = {
@@ -32,9 +38,8 @@ TYPE_MAP = {
 VALID_SITES = {"SFX", "MAH", "NAB", "SSE", "TUN"}
 
 # ── Upload configuration ───────────────────────────────────────────────────────
-MAX_TOTAL_UPLOAD_SIZE = int(os.environ.get("MAX_TOTAL_UPLOAD_SIZE", 500 * 1024 * 1024))  # 500 MB total
-MAX_SINGLE_FILE_SIZE = int(os.environ.get("MAX_SINGLE_FILE_SIZE", 100 * 1024 * 1024))   # 100 MB per file
-CHUNK_SIZE = int(os.environ.get("CHUNK_SIZE", 8192))  # 8 KB
+CHUNK_SIZE = int(os.environ.get("CHUNK_SIZE", 64 * 1024))  # 64 KB
+UPLOAD_SESSION_TTL_SECONDS = int(os.environ.get("UPLOAD_SESSION_TTL_SECONDS", 6 * 60 * 60))
 
 
 def format_size(bytes_size: int) -> str:
@@ -93,6 +98,7 @@ _cache: dict = {
 }
 IMPORT_EXECUTOR = ThreadPoolExecutor(max_workers=1)
 _import_tasks: set[asyncio.Task] = set()
+_upload_sessions: dict[str, dict] = {}
 
 CAM_SITE_MAP: dict[str, str] = {
     # SFX
@@ -1352,6 +1358,7 @@ def get_source_status() -> dict:
             "status": import_status,
             "uploaded_at": import_context.get("uploaded_at"),
             "error_message": import_context.get("error_message"),
+            "upload_id": import_context.get("upload_id"),
             "root_name": import_context.get("root_name"),
             "root_path": import_context.get("root_path"),
         },
@@ -1742,21 +1749,120 @@ async def source_status():
     return JSONResponse(get_source_status())
 
 
-async def process_import_async(import_root: str) -> None:
+def cleanup_upload_sessions(now: float | None = None) -> None:
+    cutoff = (now or time.time()) - UPLOAD_SESSION_TTL_SECONDS
+    active_root = ((_cache.get("import_context") or {}).get("root_path") or "")
+    stale_ids = [
+        upload_id
+        for upload_id, session in _upload_sessions.items()
+        if (session.get("updated_at") or session.get("started_at") or 0) < cutoff
+    ]
+    for upload_id in stale_ids:
+        session = _upload_sessions.pop(upload_id, None)
+        session_root = (session or {}).get("root_path")
+        if session_root and session_root != active_root:
+            shutil.rmtree(session_root, ignore_errors=True)
+
+
+def build_upload_session_payload(session: dict) -> dict:
+    total_bytes = int(session.get("total_bytes") or 0)
+    bytes_received = int(session.get("bytes_received") or 0)
+    upload_progress = 0
+    if total_bytes > 0:
+        upload_progress = min(100, int(bytes_received * 100 / total_bytes))
+    elif session.get("uploaded_files") and session.get("total_files"):
+        upload_progress = min(100, int(session["uploaded_files"] * 100 / session["total_files"]))
+    elif session.get("status") in {"processing", "complete"}:
+        upload_progress = 100
+
+    if session.get("status") == "complete":
+        processing_percent = 100
+    elif session.get("status") == "processing":
+        processing_percent = 95
+    else:
+        processing_percent = upload_progress
+    return {
+        "upload_id": session.get("upload_id"),
+        "status": session.get("status", "uploading"),
+        "stage": session.get("stage", "uploading"),
+        "message": session.get("message"),
+        "current_file": session.get("current_file"),
+        "total_files": int(session.get("total_files") or 0),
+        "uploaded_files": int(session.get("uploaded_files") or 0),
+        "processed_files": int(session.get("processed_files") or 0),
+        "bytes_received": bytes_received,
+        "total_bytes": total_bytes,
+        "upload_progress": upload_progress,
+        "processing_progress": processing_percent,
+        "warnings": list(session.get("warnings") or []),
+        "errors": list(session.get("errors") or []),
+        "upload_file_results": list(session.get("upload_file_results") or []),
+        "import_results": list(session.get("import_results") or []),
+        "started_at": session.get("started_at"),
+        "updated_at": session.get("updated_at"),
+        "finished_at": session.get("finished_at"),
+    }
+
+
+@app.get("/api/import-status/{upload_id}")
+async def get_import_status(upload_id: str):
+    cleanup_upload_sessions()
+    session = _upload_sessions.get(upload_id)
+    if not session:
+        return JSONResponse({"detail": "Session introuvable."}, status_code=404)
+    return JSONResponse(build_upload_session_payload(session))
+
+
+async def process_import_async(upload_id: str, import_root: str) -> None:
     """Reload cached data in a background worker after upload."""
     loop = asyncio.get_running_loop()
+    session = _upload_sessions.get(upload_id)
+    if session:
+        session.update({
+            "status": "processing",
+            "stage": "processing",
+            "message": "Analyse et chargement des fichiers importés…",
+            "processed_files": 0,
+            "updated_at": time.time(),
+        })
     try:
         await loop.run_in_executor(IMPORT_EXECUTOR, reload_cache)
+        status = get_source_status()
+        import_results = build_import_results(status)
+        warnings = list(status.get("warnings") or [])
+        if session:
+            session.update({
+                "status": "complete",
+                "stage": "ready",
+                "message": "Import terminé. Les données sont prêtes.",
+                "processed_files": status.get("source_file_count", 0) + status.get("facture_source_file_count", 0),
+                "warnings": warnings,
+                "import_results": import_results,
+                "finished_at": time.time(),
+                "updated_at": time.time(),
+            })
         import_context = _cache.get("import_context") or {}
         if import_context.get("active") and import_context.get("root_path") == import_root:
             import_context["status"] = "ready"
             import_context.pop("error_message", None)
+            import_context["upload_id"] = upload_id
     except Exception as exc:
-        logger.exception("Import background processing failed")
+        logger.exception("Import background processing failed", extra={"upload_id": upload_id})
+        error_message = f"{exc.__class__.__name__}: {exc}"
+        if session:
+            session.update({
+                "status": "error",
+                "stage": "error",
+                "message": "Le traitement a échoué.",
+                "errors": session.get("errors", []) + [{"message": error_message}],
+                "finished_at": time.time(),
+                "updated_at": time.time(),
+            })
         import_context = _cache.get("import_context") or {}
         if import_context.get("active") and import_context.get("root_path") == import_root:
             import_context["status"] = "error"
-            import_context["error_message"] = str(exc)
+            import_context["error_message"] = error_message
+            import_context["upload_id"] = upload_id
 
 
 @app.post("/api/refresh")
@@ -1767,35 +1873,42 @@ async def refresh_data():
 
 
 @app.post("/api/import-folder")
-async def import_folder(files: list[UploadFile] = File(...)):
+async def import_folder(
+    files: list[UploadFile] = File(...),
+    upload_id: str | None = Query(None, description="Identifiant facultatif de session d'import."),
+):
     if not files:
         return JSONResponse(
             {"detail": "Aucun fichier reçu. Sélectionnez le dossier Fichiers Sources."},
             status_code=400,
         )
 
-    # Pre-validate total upload size before processing any files
-    total_size = sum(upload.size or 0 for upload in files)
-
-    if total_size > MAX_TOTAL_UPLOAD_SIZE:
-        return JSONResponse(
-            {
-                "detail": (
-                    f"La taille totale des fichiers ({format_size(total_size)}) "
-                    f"dépasse la limite autorisée ({format_size(MAX_TOTAL_UPLOAD_SIZE)}). "
-                    f"Réduisez le nombre de fichiers historiques et réessayez."
-                ),
-                "error": {
-                    "code": "UPLOAD_SIZE_EXCEEDED",
-                    "total_size": total_size,
-                    "max_size": MAX_TOTAL_UPLOAD_SIZE,
-                    "file_count": len(files),
-                },
-            },
-            status_code=413,
-        )
-
+    cleanup_upload_sessions()
+    upload_id = upload_id.strip() if upload_id else str(uuid.uuid4())
+    total_bytes = sum(int(getattr(upload, "size", 0) or 0) for upload in files)
     import_root = tempfile.mkdtemp(prefix="sind_reglement_import_")
+    session = {
+        "upload_id": upload_id,
+        "status": "uploading",
+        "stage": "uploading",
+        "message": "Réception des fichiers…",
+        "current_file": None,
+        "total_files": len(files),
+        "uploaded_files": 0,
+        "processed_files": 0,
+        "bytes_received": 0,
+        "total_bytes": total_bytes,
+        "started_at": time.time(),
+        "updated_at": time.time(),
+        "finished_at": None,
+        "root_path": import_root,
+        "warnings": [],
+        "errors": [],
+        "upload_file_results": [],
+        "import_results": [],
+    }
+    _upload_sessions[upload_id] = session
+
     uploaded_root_name: str | None = None
     saved_files = 0
     warnings: list[str] = []
@@ -1805,6 +1918,9 @@ async def import_folder(files: list[UploadFile] = File(...)):
     try:
         for upload in files:
             current_upload_name = upload.filename or "fichier_inconnu"
+            session["current_file"] = current_upload_name
+            session["message"] = f"Réception de {current_upload_name}…"
+            session["updated_at"] = time.time()
             raw_rel_path = (upload.filename or "").replace("\\", "/").strip("/")
             if not raw_rel_path:
                 upload_results.append(
@@ -1814,6 +1930,7 @@ async def import_folder(files: list[UploadFile] = File(...)):
                         "message": "Nom de fichier vide ou invalide.",
                     }
                 )
+                session["errors"].append({"file": current_upload_name, "message": "Nom de fichier vide ou invalide."})
                 await upload.close()
                 continue
             segments = [segment for segment in raw_rel_path.split("/") if segment not in {"", ".", ".."}]
@@ -1825,6 +1942,7 @@ async def import_folder(files: list[UploadFile] = File(...)):
                         "message": "Chemin de fichier invalide.",
                     }
                 )
+                session["errors"].append({"file": raw_rel_path, "message": "Chemin de fichier invalide."})
                 await upload.close()
                 continue
             if len(segments) > 1:
@@ -1855,32 +1973,30 @@ async def import_folder(files: list[UploadFile] = File(...)):
                 or is_current_facture_file
                 or is_history_facture_file
             ):
+                message = "Fichier ignoré (hors périmètre de l'import)."
                 upload_results.append(
                     {
                         "file": raw_rel_path,
                         "kind": "warn",
-                        "message": "Fichier ignoré (hors périmètre de l'import).",
+                        "message": message,
                     }
                 )
+                session["warnings"].append(message)
                 await upload.close()
                 continue
 
             destination_path = os.path.join(import_root, *relative_segments)
             os.makedirs(os.path.dirname(destination_path), exist_ok=True)
-            file_size = 0
             async with aiofiles.open(destination_path, "wb") as out:
                 while True:
                     chunk = await upload.read(CHUNK_SIZE)
                     if not chunk:
                         break
-                    file_size += len(chunk)
-                    if file_size > MAX_SINGLE_FILE_SIZE:
-                        raise ValueError(
-                            f"Le fichier '{raw_rel_path}' ({format_size(file_size)}) "
-                            f"dépasse la limite par fichier ({format_size(MAX_SINGLE_FILE_SIZE)})."
-                        )
+                    session["bytes_received"] += len(chunk)
+                    session["updated_at"] = time.time()
                     await out.write(chunk)
             saved_files += 1
+            session["uploaded_files"] = saved_files
             upload_results.append(
                 {
                     "file": raw_rel_path,
@@ -1888,13 +2004,24 @@ async def import_folder(files: list[UploadFile] = File(...)):
                     "message": "Fichier reçu.",
                 }
             )
+            session["upload_file_results"] = list(upload_results)
             await upload.close()
 
         if saved_files == 0:
+            session.update({
+                "status": "error",
+                "stage": "error",
+                "message": "Le dossier importé est vide ou invalide.",
+                "errors": [{"message": "Aucun fichier exploitable n'a été reçu."}],
+                "upload_file_results": list(upload_results),
+                "finished_at": time.time(),
+                "updated_at": time.time(),
+            })
             shutil.rmtree(import_root, ignore_errors=True)
             return JSONResponse(
                 {
                     "detail": "Le dossier importé est vide ou invalide.",
+                    "upload_id": upload_id,
                     "error": {
                         "code": "EMPTY_IMPORT",
                         "message": "Aucun fichier exploitable n'a été reçu.",
@@ -1922,30 +2049,96 @@ async def import_folder(files: list[UploadFile] = File(...)):
             discovered["root_name"] = expected_root_name
 
         discovered["warnings"] = warnings + discovered.get("warnings", [])
+        critical_missing = []
+        if not discovered.get("current_found"):
+            critical_missing.append("REGLEMENT.txt")
+        if not discovered.get("history_found"):
+            critical_missing.append("Réglements")
+
+        if critical_missing:
+            detail = "Fichiers requis manquants : " + ", ".join(critical_missing) + "."
+            validation_status = {
+                "current_source_label": get_source_label(discovered.get("current_path")) if discovered.get("current_found") else None,
+                "history_source_label": get_source_label(discovered.get("history_path")) if discovered.get("history_found") else None,
+                "article_source_label": get_source_label(discovered.get("article_path")) if discovered.get("article_found") else None,
+                "etatmarge_source_label": get_source_label(discovered.get("etatmarge_path")) if discovered.get("etatmarge_found") else None,
+                "facture_source_label": get_source_label(discovered.get("facture_path")) if discovered.get("facture_found") else None,
+                "factures_source_label": get_source_label(discovered.get("factures_path")) if discovered.get("factures_found") else None,
+                **discovered,
+                "history_file_count": 0,
+                "facture_history_file_count": 0,
+                "etatmarge_warnings": [],
+                "etatmarge_lookup_size": 0,
+            }
+            session.update({
+                "status": "error",
+                "stage": "error",
+                "message": detail,
+                "warnings": list(discovered.get("warnings") or []),
+                "errors": [{"message": detail}],
+                "upload_file_results": list(upload_results),
+                "import_results": build_import_results(validation_status),
+                "finished_at": time.time(),
+                "updated_at": time.time(),
+            })
+            shutil.rmtree(import_root, ignore_errors=True)
+            return JSONResponse(
+                {
+                    "detail": detail,
+                    "upload_id": upload_id,
+                    "error": {
+                        "code": "MISSING_REQUIRED_FILES",
+                        "message": detail,
+                        "missing": critical_missing,
+                    },
+                    "upload_file_results": upload_results,
+                    "import_results": session["import_results"],
+                },
+                status_code=400,
+            )
+
         _cache["import_context"] = {
             **discovered,
             "active": True,
             "uploaded_at": time.time(),
             "status": "processing",
+            "upload_id": upload_id,
         }
-        payload = get_source_status()
-        payload["import_status"] = "processing"
-        payload["message"] = "Fichiers uploadés avec succès. Traitement en cours..."
-        payload["uploaded_files"] = saved_files
-        payload["upload_file_results"] = upload_results
-        task = asyncio.create_task(process_import_async(import_root))
+        session.update({
+            "status": "processing",
+            "stage": "processing",
+            "message": "Fichiers reçus. Analyse en arrière-plan…",
+            "warnings": list(discovered.get("warnings") or []),
+            "upload_file_results": list(upload_results),
+            "updated_at": time.time(),
+        })
+        payload = build_upload_session_payload(session)
+        payload["message"] = session["message"]
+        task = asyncio.create_task(process_import_async(upload_id, import_root))
         _import_tasks.add(task)
         task.add_done_callback(_import_tasks.discard)
-        return JSONResponse(payload)
+        return JSONResponse(payload, status_code=202)
     except Exception as exc:
+        logger.exception("Upload import failed", extra={"upload_id": upload_id, "file": current_upload_name})
+        error_message = f"{exc.__class__.__name__}: {exc}"
+        session.update({
+            "status": "error",
+            "stage": "error",
+            "message": "Import interrompu. Vérifiez le format des fichiers et réessayez.",
+            "errors": session.get("errors", []) + [{"file": current_upload_name, "message": error_message}],
+            "upload_file_results": list(upload_results),
+            "finished_at": time.time(),
+            "updated_at": time.time(),
+        })
         shutil.rmtree(import_root, ignore_errors=True)
         return JSONResponse(
             {
                 "detail": "Import interrompu. Vérifiez le format des fichiers et réessayez.",
+                "upload_id": upload_id,
                 "error": {
                     "code": "IMPORT_FAILED",
                     "file": current_upload_name,
-                    "message": f"{exc.__class__.__name__}: {exc}",
+                    "message": error_message,
                 },
                 "upload_file_results": upload_results,
             },
