@@ -12,8 +12,10 @@ from openpyxl import Workbook
 from starlette.datastructures import UploadFile
 from app import (
     _cache,
+    _upload_sessions,
     build_import_results,
     file_uri_to_fs_path,
+    get_import_status,
     get_cam_facture_detail,
     get_source_status,
     get_dashboard_for_filter,
@@ -59,6 +61,7 @@ class ReglementDateLoadingTests(unittest.TestCase):
             "sync": {},
             "import_context": {},
         })
+        _upload_sessions.clear()
 
     @staticmethod
     def _build_etatmarge_workbook_bytes(rows: list[list[object]]) -> bytes:
@@ -72,16 +75,27 @@ class ReglementDateLoadingTests(unittest.TestCase):
         stream.seek(0)
         return stream.getvalue()
 
-    def _run_folder_import(self, files: list[UploadFile], process_background: bool = True):
+    def _run_folder_import(
+        self,
+        files: list[UploadFile],
+        process_background: bool = True,
+        upload_id: str = "test-upload",
+        expect_background_task: bool = True,
+    ):
         with patch("app.asyncio.create_task") as mocked_create_task:
-            response = asyncio.run(import_folder(files))
-            mocked_create_task.assert_called_once()
-            import_coro = mocked_create_task.call_args.args[0]
-        if process_background:
-            asyncio.run(import_coro)
-        else:
-            import_coro.close()
-        return response
+            response = asyncio.run(import_folder(files, upload_id=upload_id))
+            import_coro = None
+            if expect_background_task:
+                mocked_create_task.assert_called_once()
+                import_coro = mocked_create_task.call_args.args[0]
+            else:
+                mocked_create_task.assert_not_called()
+        if import_coro is not None:
+            if process_background:
+                asyncio.run(import_coro)
+            else:
+                import_coro.close()
+        return response, upload_id
 
     def test_parse_lines_uses_reglement_date_column(self):
         text = "CTRT-26-03-0000002;26-99-CAM50-00159;20260304;20260525;SFX;TRT;CLS06386;;ATB;ACF-SFX-26-00003;188.249"
@@ -298,21 +312,57 @@ class ReglementDateLoadingTests(unittest.TestCase):
             ),
         ]
 
-        response = self._run_folder_import(files)
+        response, upload_id = self._run_folder_import(files)
         initial_payload = json.loads(response.body)
         status = get_source_status()
 
-        self.assertEqual(initial_payload["import_status"], "processing")
+        self.assertEqual(initial_payload["status"], "processing")
+        self.assertEqual(initial_payload["upload_id"], upload_id)
         self.assertEqual(status["source_mode"], "uploaded_folder")
         self.assertEqual(status["uploaded_root_name"], "Fichiers Sources")
         self.assertTrue(status["current_found"])
         self.assertTrue(status["history_found"])
+        self.assertEqual(status["import_context"]["upload_id"], upload_id)
         self.assertEqual(status["source_file_count"], 2)
         self.assertEqual(status["history_file_count"], 1)
         self.assertEqual(_cache["coverage_start"], "2026-04-27")
         self.assertEqual(_cache["coverage_end"], "2026-05-01")
 
+    def test_import_status_endpoint_returns_session_progress(self):
+        monthly_line = (
+            "CESP-26-05-0000100;26-99-CAM39-00415;20260501;20260501;BJSSE;ESP;CLS03581;;;FAC-BJS-26-00414;71.9\n"
+        )
+        history_line = (
+            "CTRT-26-04-0000078;;20260427;20260831;TUN;TRT;CLT06449;;BT;FAC-TUN-26-13006;1538.2\n"
+        )
+        files = [
+            UploadFile(
+                filename="Fichiers Sources/REGLEMENT.txt",
+                file=BytesIO(monthly_line.encode("utf-8")),
+            ),
+            UploadFile(
+                filename="Fichiers Sources/Réglements/REGLEMENT_historique.txt",
+                file=BytesIO(history_line.encode("utf-8")),
+            ),
+        ]
+
+        response, upload_id = self._run_folder_import(files, process_background=False, upload_id="upload-progress")
+        initial_payload = json.loads(response.body)
+        status_response = asyncio.run(get_import_status(upload_id))
+        status_payload = json.loads(status_response.body)
+
+        self.assertEqual(initial_payload["status"], "processing")
+        self.assertEqual(status_payload["upload_id"], upload_id)
+        self.assertEqual(status_payload["status"], "processing")
+        self.assertEqual(status_payload["uploaded_files"], 2)
+        self.assertGreater(status_payload["bytes_received"], 0)
+
     def test_background_import_marks_error_when_reload_fails(self):
+        _upload_sessions["upload-err"] = {
+            "upload_id": "upload-err",
+            "status": "processing",
+            "errors": [],
+        }
         _cache["import_context"] = {
             "active": True,
             "root_path": "/tmp/mock-import-root",
@@ -320,10 +370,11 @@ class ReglementDateLoadingTests(unittest.TestCase):
         }
 
         with patch("app.reload_cache", side_effect=RuntimeError("boom")):
-            asyncio.run(app_module.process_import_async("/tmp/mock-import-root"))
+            asyncio.run(app_module.process_import_async("upload-err", "/tmp/mock-import-root"))
 
         self.assertEqual(_cache["import_context"]["status"], "error")
         self.assertIn("boom", _cache["import_context"]["error_message"])
+        self.assertEqual(_upload_sessions["upload-err"]["status"], "error")
 
     def test_source_status_does_not_reload_cache_while_processing(self):
         _cache["loaded_at"] = None
@@ -347,13 +398,13 @@ class ReglementDateLoadingTests(unittest.TestCase):
             )
         ]
 
-        self._run_folder_import(files)
-        status = get_source_status()
+        response, upload_id = self._run_folder_import(files, expect_background_task=False, upload_id="missing-history")
+        payload = json.loads(response.body)
 
-        self.assertTrue(status["current_found"])
-        self.assertFalse(status["history_found"])
-        self.assertTrue(status["warnings"])
-        self.assertTrue(any("Réglements" in warning for warning in status["warnings"]))
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(payload["upload_id"], upload_id)
+        self.assertEqual(payload["error"]["code"], "MISSING_REQUIRED_FILES")
+        self.assertIn("Réglements", payload["error"]["missing"])
 
     def test_folder_import_ignores_non_reglement_files(self):
         monthly_line = (
