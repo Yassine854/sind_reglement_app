@@ -11,6 +11,7 @@ import time
 import unicodedata
 from urllib.parse import quote, unquote, urlsplit
 
+import aiofiles
 from fastapi import FastAPI, File, Query, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -27,6 +28,10 @@ TYPE_MAP = {
 }
 
 VALID_SITES = {"SFX", "MAH", "NAB", "SSE", "TUN"}
+
+# ── Upload configuration ───────────────────────────────────────────────────────
+MAX_UPLOAD_SIZE = int(os.environ.get("MAX_UPLOAD_SIZE", 100 * 1024 * 1024))  # 100 MB
+CHUNK_SIZE = int(os.environ.get("CHUNK_SIZE", 8192))  # 8 KB
 
 # ── Source configuration ───────────────────────────────────────────────────────
 # Folder upload/import is the primary workflow. These env vars remain as an
@@ -1793,9 +1798,19 @@ async def import_folder(files: list[UploadFile] = File(...)):
 
             destination_path = os.path.join(import_root, *relative_segments)
             os.makedirs(os.path.dirname(destination_path), exist_ok=True)
-            content = await upload.read()
-            with open(destination_path, "wb") as out:
-                out.write(content)
+            file_size = 0
+            async with aiofiles.open(destination_path, "wb") as out:
+                while True:
+                    chunk = await upload.read(CHUNK_SIZE)
+                    if not chunk:
+                        break
+                    file_size += len(chunk)
+                    if file_size > MAX_UPLOAD_SIZE:
+                        raise ValueError(
+                            f"Fichier '{raw_rel_path}' dépasse la taille maximale autorisée "
+                            f"({MAX_UPLOAD_SIZE // (1024 * 1024)} Mo)."
+                        )
+                    await out.write(chunk)
             saved_files += 1
             upload_results.append(
                 {
