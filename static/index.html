@@ -1258,6 +1258,17 @@ function uploadWithProgress(formData, onProgress) {
         return;
       }
       if (xhr.status >= 400) {
+        if (xhr.status === 413) {
+          var sizeInfo = data.error && data.error.total_size
+            ? ' (' + (data.error.total_size / (1024 * 1024)).toFixed(1) + ' Mo envoyés)'
+            : '';
+          reject({
+            message: data.detail || ('Fichiers trop volumineux' + sizeInfo + '. Réduisez le nombre de fichiers et réessayez.'),
+            payload: data,
+            status: xhr.status,
+          });
+          return;
+        }
         reject({
           message: data.detail || (data.error && data.error.message) || ('Échec de l\'import du dossier (erreur ' + xhr.status + ').'),
           payload: data,
@@ -1333,7 +1344,7 @@ async function importGuidedSelection() {
     return;
   }
 
-  const MAX_CLIENT_UPLOAD_SIZE = 100 * 1024 * 1024; // 100 MB
+  const MAX_CLIENT_UPLOAD_SIZE = 500 * 1024 * 1024; // 500 MB
   const allFiles = [
     selectedGuidedSources.currentReglement,
     ...selectedGuidedSources.historyReglements,
@@ -1344,7 +1355,8 @@ async function importGuidedSelection() {
   ].filter(Boolean);
   const totalSize = allFiles.reduce(function(sum, f) { return sum + f.size; }, 0);
   if (totalSize > MAX_CLIENT_UPLOAD_SIZE) {
-    setImportState('error', { message: 'La taille totale des fichiers dépasse la limite autorisée (100 Mo). Réduisez le nombre de fichiers et réessayez.' });
+    var sizeMo = (totalSize / (1024 * 1024)).toFixed(1);
+    setImportState('error', { message: 'La taille totale des fichiers (' + sizeMo + ' Mo) dépasse la limite autorisée (500 Mo). Réduisez le nombre de fichiers historiques et réessayez.' });
     return;
   }
 
