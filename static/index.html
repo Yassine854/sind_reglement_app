@@ -1165,38 +1165,7 @@ function setImportState(state, opts) {
     fillEl.className = 'import-progress-fill complete';
     subEl.innerHTML = '';
 
-    const tagItems = [];
-    if (payload.current_found) {
-      tagItems.push({ text: 'REGLEMENT.txt d\u00e9tect\u00e9', kind: 'ok' });
-    } else {
-      tagItems.push({ text: 'REGLEMENT.txt introuvable', kind: 'warn' });
-    }
-    if (payload.history_found) {
-      const n = payload.history_file_count || 0;
-      tagItems.push({ text: n + ' fichier(s) historique(s) d\u00e9tect\u00e9(s)', kind: 'ok' });
-    } else {
-      tagItems.push({ text: 'Dossier R\u00e9glements introuvable', kind: 'warn' });
-    }
-    tagItems.push({
-      text: payload.article_found ? 'ARTICLE d\u00e9tect\u00e9' : 'ARTICLE introuvable',
-      kind: payload.article_found ? 'ok' : 'warn'
-    });
-    tagItems.push({
-      text: payload.etatmarge_found ? 'etatmarge d\u00e9tect\u00e9' : 'etatmarge non fourni',
-      kind: payload.etatmarge_found ? 'ok' : 'warn'
-    });
-    tagItems.push({
-      text: payload.facture_found ? 'FACTURE d\u00e9tect\u00e9' : 'FACTURE introuvable',
-      kind: payload.facture_found ? 'ok' : 'warn'
-    });
-    if (payload.factures_found) {
-      tagItems.push({
-        text: (payload.facture_history_file_count || 0) + ' facture(s) historique(s) d\u00e9tect\u00e9(s)',
-        kind: 'ok'
-      });
-    } else {
-      tagItems.push({ text: 'Dossier Factures introuvable', kind: 'warn' });
-    }
+    const tagItems = buildImportTagItems(payload);
     tagsEl.innerHTML = tagItems.map(t =>
       '<span class="import-result-tag ' + t.kind + '">' + escapeHtml(t.text) + '</span>'
     ).join('');
@@ -1213,13 +1182,58 @@ function setImportState(state, opts) {
     fillEl.style.width = '100%';
     fillEl.className = 'import-progress-fill error';
     subEl.textContent = opts.message || "Une erreur est survenue.";
-    tagsEl.innerHTML = '';
+    const tagItems = buildImportTagItems(opts.payload || {});
+    tagsEl.innerHTML = tagItems.map(t =>
+      '<span class="import-result-tag ' + t.kind + '">' + escapeHtml(t.text) + '</span>'
+    ).join('');
 
     btnWrap.style.display = '';
     btn.disabled = false;
     btn.textContent = 'R\u00e9essayer';
     return;
   }
+}
+
+function buildImportTagItems(payload) {
+  if (payload && Array.isArray(payload.import_results) && payload.import_results.length) {
+    return payload.import_results.map(function(result) {
+      const filePart = result.file ? (' [' + result.file + ']') : '';
+      return {
+        text: (result.label || 'Fichier') + filePart + ' — ' + (result.message || 'Statut inconnu.'),
+        kind: result.kind || 'warn',
+      };
+    });
+  }
+
+  const tagItems = [];
+  if (payload.current_found) {
+    tagItems.push({ text: 'REGLEMENT.txt d\u00e9tect\u00e9', kind: 'ok' });
+  } else {
+    tagItems.push({ text: 'REGLEMENT.txt introuvable', kind: 'warn' });
+  }
+  if (payload.history_found) {
+    tagItems.push({ text: (payload.history_file_count || 0) + ' fichier(s) historique(s) d\u00e9tect\u00e9(s)', kind: 'ok' });
+  } else {
+    tagItems.push({ text: 'Dossier R\u00e9glements introuvable', kind: 'warn' });
+  }
+  tagItems.push({
+    text: payload.article_found ? 'ARTICLE d\u00e9tect\u00e9' : 'ARTICLE introuvable',
+    kind: payload.article_found ? 'ok' : 'warn'
+  });
+  tagItems.push({
+    text: payload.etatmarge_found ? 'etatmarge d\u00e9tect\u00e9' : 'etatmarge non fourni',
+    kind: payload.etatmarge_found ? 'ok' : 'warn'
+  });
+  tagItems.push({
+    text: payload.facture_found ? 'FACTURE d\u00e9tect\u00e9' : 'FACTURE introuvable',
+    kind: payload.facture_found ? 'ok' : 'warn'
+  });
+  if (payload.factures_found) {
+    tagItems.push({ text: (payload.facture_history_file_count || 0) + ' facture(s) historique(s) d\u00e9tect\u00e9(s)', kind: 'ok' });
+  } else {
+    tagItems.push({ text: 'Dossier Factures introuvable', kind: 'warn' });
+  }
+  return tagItems;
 }
 
 function uploadWithProgress(formData, onProgress) {
@@ -1230,16 +1244,28 @@ function uploadWithProgress(formData, onProgress) {
       if (e.lengthComputable) onProgress(Math.round(e.loaded / e.total * 100));
     });
     xhr.addEventListener('load', function() {
+      var data = null;
       try {
-        var data = JSON.parse(xhr.responseText);
-        if (xhr.status >= 400) reject(new Error(data.detail || ('Échec de l\'import du dossier (erreur ' + xhr.status + ').')));
-        else resolve(data);
+        data = JSON.parse(xhr.responseText || '{}');
       } catch (_) {
-        reject(new Error('Réponse invalide du serveur.'));
+        var fallbackMessage = xhr.status >= 500
+          ? ('Erreur serveur lors de l\'import (erreur ' + xhr.status + ').')
+          : ('Réponse invalide du serveur (erreur ' + xhr.status + ').');
+        reject({ message: fallbackMessage, payload: { detail: fallbackMessage }, status: xhr.status });
+        return;
       }
+      if (xhr.status >= 400) {
+        reject({
+          message: data.detail || (data.error && data.error.message) || ('Échec de l\'import du dossier (erreur ' + xhr.status + ').'),
+          payload: data,
+          status: xhr.status,
+        });
+        return;
+      }
+      resolve(data);
     });
-    xhr.addEventListener('error', function() { reject(new Error("Erreur réseau lors de l'import.")); });
-    xhr.addEventListener('abort', function() { reject(new Error('Import annulé.')); });
+    xhr.addEventListener('error', function() { reject({ message: "Erreur réseau lors de l'import." }); });
+    xhr.addEventListener('abort', function() { reject({ message: 'Import annulé.' }); });
     xhr.send(formData);
   });
 }
@@ -1332,7 +1358,10 @@ async function importGuidedSelection() {
     imported = true;
   } catch (err) {
     setLoading(false);
-    setImportState('error', { message: err.message || "Échec de l'import des fichiers." });
+    setImportState('error', {
+      message: (err && err.message) || "Échec de l'import des fichiers.",
+      payload: (err && err.payload) || null,
+    });
   } finally {
     if (imported) clearGuidedInputs();
   }

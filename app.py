@@ -52,6 +52,7 @@ _cache: dict = {
     "current_source_files": [],  # Only the current-month source file(s)
     "article_lookup": {},
     "etatmarge_lookup": {},
+    "etatmarge_warnings": [],
     "all_facture_lines": [],
     "all_big_factures": [],
     "current_big_factures": [],
@@ -646,35 +647,87 @@ def parse_decimal(value: object) -> float | None:
         return None
 
 
-def parse_etatmarge_rows(rows: list[list[object]]) -> dict[str, float]:
+def build_etatmarge_issue_message(filename: str, message: str) -> str:
+    return f"{filename} : {message}"
+
+
+def parse_etatmarge_rows_with_diagnostics(
+    rows: list[list[object]],
+) -> tuple[dict[str, float], list[str], list[str]]:
+    filename = "etatmarge"
+    has_data = any(
+        any(str(cell).strip() for cell in row if cell is not None)
+        for row in rows
+    )
+    if not has_data:
+        return {}, [build_etatmarge_issue_message(filename, "fichier vide.")], []
+
+    normalized_rows = [
+        [normalize_token(str(cell)) if cell is not None else "" for cell in row]
+        for row in rows
+    ]
     header_index = -1
     article_index = -1
     tva_index = -1
+    first_article_row = -1
+    first_tva_row = -1
 
-    for idx, row in enumerate(rows):
-        normalized_cells = [normalize_token(str(cell)) if cell is not None else "" for cell in row]
+    for idx, normalized_cells in enumerate(normalized_rows):
         has_article = "article" in normalized_cells
         has_tva = "tva" in normalized_cells
+        if has_article and first_article_row < 0:
+            first_article_row = idx
+        if has_tva and first_tva_row < 0:
+            first_tva_row = idx
         if has_article and has_tva:
             header_index = idx
             article_index = normalized_cells.index("article")
             tva_index = normalized_cells.index("tva")
             break
 
-    if header_index < 0 or article_index < 0 or tva_index < 0:
-        return {}
+    if header_index < 0:
+        if first_article_row < 0 and first_tva_row < 0:
+            return {}, [build_etatmarge_issue_message(filename, "ligne d'en-tête introuvable (colonnes Article / Tva non détectées).")], []
+        if first_article_row >= 0 and first_tva_row < 0:
+            return {}, [build_etatmarge_issue_message(filename, "colonne Tva manquante.")], []
+        if first_tva_row >= 0 and first_article_row < 0:
+            return {}, [build_etatmarge_issue_message(filename, "colonne Article manquante.")], []
+        return {}, [build_etatmarge_issue_message(filename, "ligne d'en-tête invalide (Article et Tva détectés sur des lignes différentes).")], []
 
     lookup: dict[str, float] = {}
+    invalid_tva_articles: list[str] = []
     for row in rows[header_index + 1 :]:
         if max(article_index, tva_index) >= len(row):
             continue
         article_code = normalize_article_code(str(row[article_index]) if row[article_index] is not None else "")
         if not article_code:
             continue
-        tva_rate = parse_decimal(row[tva_index])
+        raw_tva = row[tva_index]
+        tva_rate = parse_decimal(raw_tva)
         if tva_rate is None:
+            if str(raw_tva or "").strip():
+                invalid_tva_articles.append(article_code)
             continue
         lookup[article_code] = tva_rate
+
+    warnings: list[str] = []
+    if invalid_tva_articles:
+        sample = ", ".join(invalid_tva_articles[:5])
+        suffix = "…" if len(invalid_tva_articles) > 5 else ""
+        warnings.append(
+            build_etatmarge_issue_message(
+                filename,
+                f"valeur TVA invalide ignorée pour article(s) {sample}{suffix}.",
+            )
+        )
+
+    if not lookup:
+        return {}, [build_etatmarge_issue_message(filename, "aucune ligne de données exploitable après l'en-tête.")], warnings
+    return lookup, [], warnings
+
+
+def parse_etatmarge_rows(rows: list[list[object]]) -> dict[str, float]:
+    lookup, _, _ = parse_etatmarge_rows_with_diagnostics(rows)
     return lookup
 
 
@@ -700,6 +753,7 @@ def load_etatmarge_lookup(path: str) -> tuple[dict[str, float], list[str]]:
     if not path:
         return {}, []
 
+    filename = os.path.basename(path) or "etatmarge"
     _, ext = os.path.splitext(path)
     ext = ext.casefold()
     try:
@@ -708,18 +762,34 @@ def load_etatmarge_lookup(path: str) -> tuple[dict[str, float], list[str]]:
             sheet = workbook.active
             rows = [list(row) for row in sheet.iter_rows(values_only=True)]
             workbook.close()
-            lookup = parse_etatmarge_rows(rows)
+            lookup, errors, warnings = parse_etatmarge_rows_with_diagnostics(rows)
+            if errors:
+                return {}, [build_etatmarge_issue_message(filename, err.split(" : ", 1)[-1]) for err in errors]
+            return lookup, [build_etatmarge_issue_message(filename, warn.split(" : ", 1)[-1]) for warn in warnings]
         else:
             text, error = read_text_file(path)
             if error:
                 return {}, [error]
-            lookup = parse_etatmarge_text(text or "")
+            rows: list[list[object]] = []
+            for line in (text or "").splitlines():
+                raw_line = line.strip()
+                if not raw_line:
+                    continue
+                if "\t" in raw_line:
+                    parts = [part.strip() for part in raw_line.split("\t")]
+                elif ";" in raw_line:
+                    parts = [part.strip() for part in raw_line.split(";")]
+                elif "|" in raw_line:
+                    parts = [part.strip() for part in raw_line.split("|")]
+                else:
+                    continue
+                rows.append(parts)
+            lookup, errors, warnings = parse_etatmarge_rows_with_diagnostics(rows)
+            if errors:
+                return {}, [build_etatmarge_issue_message(filename, err.split(" : ", 1)[-1]) for err in errors]
+            return lookup, [build_etatmarge_issue_message(filename, warn.split(" : ", 1)[-1]) for warn in warnings]
     except Exception as exc:
-        return {}, [f"Impossible de lire etatmarge ({path}) : {exc.__class__.__name__}"]
-
-    if not lookup:
-        return {}, [f"Le fichier etatmarge est chargé mais aucune colonne Article/Tva exploitable n'a été trouvée ({path})."]
-    return lookup, []
+        return {}, [build_etatmarge_issue_message(filename, f"fichier Excel invalide ou illisible ({exc.__class__.__name__}).")]
 
 
 def list_plain_files(directory: str) -> tuple[list[str], list[str]]:
@@ -1075,6 +1145,7 @@ def reload_cache() -> None:
             "current_source_files": [],
             "article_lookup": {},
             "etatmarge_lookup": {},
+            "etatmarge_warnings": [],
             "all_facture_lines": [],
             "all_big_factures": [],
             "current_big_factures": [],
@@ -1163,6 +1234,7 @@ def reload_cache() -> None:
         "current_source_files": current_sources,
         "article_lookup": article_lookup,
         "etatmarge_lookup": etatmarge_lookup,
+        "etatmarge_warnings": etatmarge_warnings,
         "all_facture_lines": all_facture_lines,
         "all_big_factures": all_big_factures,
         "current_big_factures": current_big_factures,
@@ -1226,6 +1298,26 @@ def get_source_status() -> dict:
             if history_source
             else "—"
         ),
+        "article_source_label": (
+            get_source_label(article_source)
+            if article_source
+            else "—"
+        ),
+        "etatmarge_source_label": (
+            get_source_label(etatmarge_source)
+            if etatmarge_source
+            else "—"
+        ),
+        "facture_source_label": (
+            get_source_label(facture_source)
+            if facture_source
+            else "—"
+        ),
+        "factures_source_label": (
+            get_source_label(factures_source)
+            if factures_source
+            else "—"
+        ),
         "source_mode": "uploaded_folder" if using_uploaded_folder else "configured_paths",
         "uploaded_root_name": import_context.get("root_name"),
         "uploaded_root_path": import_context.get("root_path"),
@@ -1243,6 +1335,8 @@ def get_source_status() -> dict:
         "factures_found": import_context.get("factures_found", bool(factures_source)),
         "facture_coverage_start": cache.get("facture_coverage_start"),
         "facture_coverage_end": cache.get("facture_coverage_end"),
+        "etatmarge_warnings": cache.get("etatmarge_warnings", []),
+        "etatmarge_lookup_size": len(cache.get("etatmarge_lookup", {})),
         "runtime_label": f"{os.name}/{sys.platform}",
         "current_diagnostic": cache.get("source_diagnostics", {}).get("current", {}),
         "history_diagnostic": cache.get("source_diagnostics", {}).get("history", {}),
@@ -1255,6 +1349,100 @@ def get_source_status() -> dict:
         "local_history_path": cache.get("sync", {}).get("local_history_path"),
         "copied_history_files": cache.get("sync", {}).get("copied_history_files", 0),
     }
+
+
+def build_import_results(status: dict) -> list[dict]:
+    etatmarge_warnings = status.get("etatmarge_warnings", [])
+    etatmarge_warning_msg = " ".join(etatmarge_warnings) if etatmarge_warnings else ""
+    etatmarge_lookup_size = int(status.get("etatmarge_lookup_size") or 0)
+    return [
+        {
+            "key": "current_reglement",
+            "label": "REGLEMENT.txt",
+            "required": True,
+            "status": "ok" if status.get("current_found") else "missing",
+            "kind": "ok" if status.get("current_found") else "err",
+            "file": status.get("current_source_label") if status.get("current_found") else None,
+            "message": (
+                "Fichier chargé."
+                if status.get("current_found")
+                else "Fichier requis introuvable."
+            ),
+        },
+        {
+            "key": "history_reglements",
+            "label": "Réglements (historique)",
+            "required": True,
+            "status": "ok" if status.get("history_found") else "missing",
+            "kind": "ok" if status.get("history_found") else "err",
+            "file": status.get("history_source_label") if status.get("history_found") else None,
+            "message": (
+                f"{status.get('history_file_count', 0)} fichier(s) chargé(s)."
+                if status.get("history_found")
+                else "Dossier requis introuvable."
+            ),
+        },
+        {
+            "key": "article",
+            "label": "ARTICLE",
+            "required": True,
+            "status": "ok" if status.get("article_found") else "missing",
+            "kind": "ok" if status.get("article_found") else "err",
+            "file": status.get("article_source_label") if status.get("article_found") else None,
+            "message": (
+                "Fichier chargé."
+                if status.get("article_found")
+                else "Fichier requis introuvable."
+            ),
+        },
+        {
+            "key": "etatmarge",
+            "label": "etatmarge",
+            "required": False,
+            "status": (
+                "optional"
+                if not status.get("etatmarge_found")
+                else ("error" if etatmarge_warnings and etatmarge_lookup_size == 0 else ("warning" if etatmarge_warnings else "ok"))
+            ),
+            "kind": (
+                "warn"
+                if not status.get("etatmarge_found")
+                else ("err" if etatmarge_warnings and etatmarge_lookup_size == 0 else ("warn" if etatmarge_warnings else "ok"))
+            ),
+            "file": status.get("etatmarge_source_label") if status.get("etatmarge_found") else None,
+            "message": (
+                "Fichier optionnel non fourni."
+                if not status.get("etatmarge_found")
+                else (etatmarge_warning_msg or "Fichier chargé.")
+            ),
+        },
+        {
+            "key": "facture",
+            "label": "FACTURE",
+            "required": True,
+            "status": "ok" if status.get("facture_found") else "missing",
+            "kind": "ok" if status.get("facture_found") else "err",
+            "file": status.get("facture_source_label") if status.get("facture_found") else None,
+            "message": (
+                "Fichier chargé."
+                if status.get("facture_found")
+                else "Fichier requis introuvable."
+            ),
+        },
+        {
+            "key": "history_factures",
+            "label": "Factures (historique)",
+            "required": True,
+            "status": "ok" if status.get("factures_found") else "missing",
+            "kind": "ok" if status.get("factures_found") else "err",
+            "file": status.get("factures_source_label") if status.get("factures_found") else None,
+            "message": (
+                f"{status.get('facture_history_file_count', 0)} fichier(s) chargé(s)."
+                if status.get("factures_found")
+                else "Dossier requis introuvable."
+            ),
+        },
+    ]
 
 
 @app.on_event("startup")
@@ -1537,84 +1725,140 @@ async def import_folder(files: list[UploadFile] = File(...)):
     uploaded_root_name: str | None = None
     saved_files = 0
     warnings: list[str] = []
+    current_upload_name: str | None = None
+    upload_results: list[dict] = []
 
-    for upload in files:
-        raw_rel_path = (upload.filename or "").replace("\\", "/").strip("/")
-        if not raw_rel_path:
+    try:
+        for upload in files:
+            current_upload_name = upload.filename or "fichier_inconnu"
+            raw_rel_path = (upload.filename or "").replace("\\", "/").strip("/")
+            if not raw_rel_path:
+                upload_results.append(
+                    {
+                        "file": current_upload_name,
+                        "kind": "err",
+                        "message": "Nom de fichier vide ou invalide.",
+                    }
+                )
+                await upload.close()
+                continue
+            segments = [segment for segment in raw_rel_path.split("/") if segment not in {"", ".", ".."}]
+            if not segments:
+                upload_results.append(
+                    {
+                        "file": raw_rel_path,
+                        "kind": "err",
+                        "message": "Chemin de fichier invalide.",
+                    }
+                )
+                await upload.close()
+                continue
+            if len(segments) > 1:
+                uploaded_root_name = uploaded_root_name or segments[0]
+                relative_segments = segments[1:]
+            else:
+                relative_segments = segments
+            if not relative_segments:
+                await upload.close()
+                continue
+
+            filename = relative_segments[-1]
+            parent_segments = relative_segments[:-1]
+            is_root_level = len(parent_segments) == 0
+            in_reglements_dir = any(is_reglements_dir_name(segment) for segment in parent_segments)
+            in_factures_dir = any(is_factures_dir_name(segment) for segment in parent_segments)
+            is_monthly_file = filename.casefold() == "reglement.txt"
+            is_history_file = in_reglements_dir and is_reglement_text_filename(filename)
+            is_article_file = is_root_level and is_named_source_file(filename, "ARTICLE")
+            is_etatmarge_file = is_root_level and is_named_excel_source_file(filename, "etatmarge")
+            is_current_facture_file = is_root_level and is_named_source_file(filename, "FACTURE")
+            is_history_facture_file = in_factures_dir
+            if not (
+                is_monthly_file
+                or is_history_file
+                or is_article_file
+                or is_etatmarge_file
+                or is_current_facture_file
+                or is_history_facture_file
+            ):
+                upload_results.append(
+                    {
+                        "file": raw_rel_path,
+                        "kind": "warn",
+                        "message": "Fichier ignoré (hors périmètre de l'import).",
+                    }
+                )
+                await upload.close()
+                continue
+
+            destination_path = os.path.join(import_root, *relative_segments)
+            os.makedirs(os.path.dirname(destination_path), exist_ok=True)
+            content = await upload.read()
+            with open(destination_path, "wb") as out:
+                out.write(content)
+            saved_files += 1
+            upload_results.append(
+                {
+                    "file": raw_rel_path,
+                    "kind": "ok",
+                    "message": "Fichier reçu.",
+                }
+            )
             await upload.close()
-            continue
-        segments = [segment for segment in raw_rel_path.split("/") if segment not in {"", ".", ".."}]
-        if not segments:
-            await upload.close()
-            continue
-        if len(segments) > 1:
-            uploaded_root_name = uploaded_root_name or segments[0]
-            relative_segments = segments[1:]
+
+        if saved_files == 0:
+            shutil.rmtree(import_root, ignore_errors=True)
+            return JSONResponse(
+                {
+                    "detail": "Le dossier importé est vide ou invalide.",
+                    "error": {
+                        "code": "EMPTY_IMPORT",
+                        "message": "Aucun fichier exploitable n'a été reçu.",
+                    },
+                    "upload_file_results": upload_results,
+                },
+                status_code=400,
+            )
+
+        previous_context = _cache.get("import_context") or {}
+        previous_root = previous_context.get("root_path")
+        if previous_root and previous_root != import_root:
+            shutil.rmtree(previous_root, ignore_errors=True)
+
+        discovered = discover_uploaded_sources(import_root)
+        expected_root_name = "Fichiers Sources"
+        if uploaded_root_name:
+            discovered["root_name"] = uploaded_root_name
+            if normalize_token(uploaded_root_name) != normalize_token(expected_root_name):
+                warnings.append(
+                    f"Dossier racine détecté: {uploaded_root_name}. "
+                    f"Le dossier attendu est {expected_root_name}."
+                )
         else:
-            relative_segments = segments
-        if not relative_segments:
-            await upload.close()
-            continue
+            discovered["root_name"] = expected_root_name
 
-        filename = relative_segments[-1]
-        parent_segments = relative_segments[:-1]
-        is_root_level = len(parent_segments) == 0
-        in_reglements_dir = any(is_reglements_dir_name(segment) for segment in parent_segments)
-        in_factures_dir = any(is_factures_dir_name(segment) for segment in parent_segments)
-        is_monthly_file = filename.casefold() == "reglement.txt"
-        is_history_file = in_reglements_dir and is_reglement_text_filename(filename)
-        is_article_file = is_root_level and is_named_source_file(filename, "ARTICLE")
-        is_etatmarge_file = is_root_level and is_named_excel_source_file(filename, "etatmarge")
-        is_current_facture_file = is_root_level and is_named_source_file(filename, "FACTURE")
-        is_history_facture_file = in_factures_dir
-        if not (
-            is_monthly_file
-            or is_history_file
-            or is_article_file
-            or is_etatmarge_file
-            or is_current_facture_file
-            or is_history_facture_file
-        ):
-            await upload.close()
-            continue
-
-        destination_path = os.path.join(import_root, *relative_segments)
-        os.makedirs(os.path.dirname(destination_path), exist_ok=True)
-        content = await upload.read()
-        with open(destination_path, "wb") as out:
-            out.write(content)
-        saved_files += 1
-        await upload.close()
-
-    if saved_files == 0:
+        discovered["warnings"] = warnings + discovered.get("warnings", [])
+        _cache["import_context"] = {
+            **discovered,
+            "active": True,
+            "uploaded_at": time.time(),
+        }
+        reload_cache()
+        payload = get_source_status()
+        payload["import_results"] = build_import_results(payload)
+        payload["upload_file_results"] = upload_results
+        return JSONResponse(payload)
+    except Exception as exc:
         shutil.rmtree(import_root, ignore_errors=True)
         return JSONResponse(
-            {"detail": "Le dossier importé est vide ou invalide."},
-            status_code=400,
+            {
+                "detail": "Import interrompu. Vérifiez le format des fichiers et réessayez.",
+                "error": {
+                    "code": "IMPORT_FAILED",
+                    "file": current_upload_name,
+                    "message": f"{exc.__class__.__name__}: {exc}",
+                },
+                "upload_file_results": upload_results,
+            },
+            status_code=500,
         )
-
-    previous_context = _cache.get("import_context") or {}
-    previous_root = previous_context.get("root_path")
-    if previous_root and previous_root != import_root:
-        shutil.rmtree(previous_root, ignore_errors=True)
-
-    discovered = discover_uploaded_sources(import_root)
-    expected_root_name = "Fichiers Sources"
-    if uploaded_root_name:
-        discovered["root_name"] = uploaded_root_name
-        if normalize_token(uploaded_root_name) != normalize_token(expected_root_name):
-            warnings.append(
-                f"Dossier racine détecté: {uploaded_root_name}. "
-                f"Le dossier attendu est {expected_root_name}."
-            )
-    else:
-        discovered["root_name"] = expected_root_name
-
-    discovered["warnings"] = warnings + discovered.get("warnings", [])
-    _cache["import_context"] = {
-        **discovered,
-        "active": True,
-        "uploaded_at": time.time(),
-    }
-    reload_cache()
-    return JSONResponse(get_source_status())
