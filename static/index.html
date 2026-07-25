@@ -1117,6 +1117,9 @@ tr:hover .cam-link-hint { opacity: 1; }
     <button class="nav-item" id="nav-sites" onclick="switchTab('sites');setActiveNav(this)">
       <span class="nav-icon">🗺️</span>Par Site
     </button>
+    <button class="nav-item" id="nav-forecast" onclick="switchTab('forecast');setActiveNav(this)">
+  <span class="nav-icon">📈</span>Prévisions
+</button>
   </div>
 
   <div>
@@ -1357,6 +1360,8 @@ tr:hover .cam-link-hint { opacity: 1; }
       <button class="tab-btn" onclick="switchTab('detail')">💰 Montants</button>
       <button class="tab-btn" onclick="switchTab('ops')">📊 Opérations</button>
       <button class="tab-btn" onclick="switchTab('sites')">🗺️ Par Site</button>
+      <button class="tab-btn" onclick="switchTab('forecast')">📈 Prévisions</button>
+
     </div>
   </div>
 
@@ -1435,6 +1440,71 @@ tr:hover .cam-link-hint { opacity: 1; }
         </table>
       </div>
     </div>
+  </div>
+</div>
+
+<div id="tab-forecast" class="tab-panel">
+  <div class="filter-bar" style="margin-bottom:1.25rem">
+    <div class="date-wrap">
+      <div class="filter-lbl">Portée</div>
+      <select class="date-input" id="forecast-scope-select" onchange="onForecastScopeChange()">
+        <option value="global">Global</option>
+        <option value="site">Par Site</option>
+        <option value="cam">Par CAM</option>
+      </select>
+    </div>
+    <div class="date-wrap" id="forecast-target-wrap" style="display:none">
+      <div class="filter-lbl">Cible</div>
+      <select class="date-input" id="forecast-target-select" onchange="loadForecast()"></select>
+    </div>
+  </div>
+
+  <div class="kpi-row">
+    <div class="kpi-card">
+      <div class="kpi-icon">💵</div>
+      <div class="kpi-label">Règlements · mois en cours</div>
+      <div><span class="kpi-val" id="f-reg-current">—</span><span class="kpi-unit">DT</span></div>
+      <div class="kpi-sub" id="f-reg-current-sub">—</div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-icon">📅</div>
+      <div class="kpi-label">Règlements · mois prochain</div>
+      <div><span class="kpi-val" id="f-reg-next">—</span><span class="kpi-unit">DT</span></div>
+      <div class="kpi-sub" id="f-reg-next-sub">—</div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-icon">🧾</div>
+      <div class="kpi-label">Ventes · mois prochain</div>
+      <div><span class="kpi-val" id="f-fac-next">—</span><span class="kpi-unit">DT</span></div>
+      <div class="kpi-sub" id="f-fac-next-sub">—</div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-icon">⚖️</div>
+      <div class="kpi-label">Écart de collecte</div>
+      <div><span class="kpi-val" id="f-gap" style="font-size:17px">—</span></div>
+      <div class="kpi-sub" id="f-gap-sub">—</div>
+    </div>
+  </div>
+
+  <div class="section-card">
+    <div class="section-header">
+      <div class="section-title">
+        <div class="section-icon" style="background:var(--blue-dim)">📈</div>
+        Évolution &amp; prévision
+      </div>
+      <span class="section-sub" id="forecast-confidence-badge"></span>
+    </div>
+    <div id="forecast-chart-holder" style="padding:1.5rem"></div>
+  </div>
+
+  <div class="section-card">
+    <div class="section-header">
+      <div class="section-title">
+        <div class="section-icon" style="background:var(--teal3)">💬</div>
+        Résumé
+      </div>
+    </div>
+    <div id="forecast-narrative" style="padding:1rem 1.5rem;line-height:1.6;color:var(--text2);font-size:13px"></div>
   </div>
 </div>
 
@@ -1904,6 +1974,35 @@ dropZone.addEventListener('drop', e => {
   Promise.all(promises).then(() => handleFileSelection(files));
 });
 
+let _importProgressPoll = null;
+
+function startImportProgressPolling() {
+  stopImportProgressPolling();
+  _importProgressPoll = setInterval(async () => {
+    try {
+      const r = await fetch('/api/import-progress');
+      const d = await r.json();
+      renderImportProgress(d);
+    } catch (_) { /* transient — ignore */ }
+  }, 500);
+}
+
+function stopImportProgressPolling() {
+  if (_importProgressPoll) {
+    clearInterval(_importProgressPoll);
+    _importProgressPoll = null;
+  }
+}
+
+function renderImportProgress(d) {
+  const pctVal = Math.max(0, Math.min(100, d.pct || 0));
+  $('prog-pct').textContent = pctVal.toFixed(0) + '%';
+  $('prog-fill').style.width = pctVal + '%';
+  $('prog-fill').className = 'progress-fill';
+  const doneTxt = (d.total || 0) > 0 ? (d.done + ' / ' + d.total + ' fichier(s)') : '';
+  $('prog-sub').textContent = (d.stage || 'Traitement…') + (doneTxt ? ' — ' + doneTxt : '');
+}
+
 function handleFileSelection(files) {
   selectedFiles = files;
   updateChecklist(files);
@@ -2174,44 +2273,15 @@ function setImportState(state, opts = {}) {
   }
 
   // ── PROCESSING STATE — animated steps ──
+
   if (state === 'processing') {
     actBar.style.display = 'none';
-    fill.style.width = '100%';
+    title.innerHTML = '<span class="mini-spinner"></span> Traitement serveur…';
+    pct.textContent = '0%';
+    fill.style.width = '0%';
     fill.className = 'progress-fill';
-    pct.textContent = '';
-
-    // Animated step messages so user knows server is working
-    const steps = [
-      '📂 Fichiers reçus — organisation du dossier…',
-      '📄 Lecture de REGLEMENT.txt…',
-      '🗂️ Chargement de l\'historique Réglements…',
-      '📊 Lecture du fichier etatmarge…',
-      '🧾 Chargement des factures…',
-      '🔢 Calcul des règlements par CAM…',
-      '⚡ Indexation et mise en cache…',
-      '✅ Finalisation…',
-    ];
-
-    let stepIdx = 0;
-
-    // Animate bar between 95–99% so it feels alive
-    let barPct = 95;
-    let barDir = 1;
-
-    const updateStep = () => {
-      title.innerHTML = '<span class="mini-spinner"></span> Traitement serveur…';
-      sub.textContent = steps[stepIdx % steps.length];
-      stepIdx++;
-
-      // Subtle bar oscillation
-      barPct += barDir * 0.8;
-      if (barPct >= 99) barDir = -1;
-      if (barPct <= 95) barDir = 1;
-      fill.style.width = barPct.toFixed(1) + '%';
-    };
-
-    updateStep(); // show immediately
-    window._stepInterval = setInterval(updateStep, 1800);
+    sub.textContent = opts.message || 'Fichiers reçus — analyse en cours…';
+    startImportProgressPolling();
     return;
   }
 
@@ -2885,6 +2955,167 @@ function renderSiteDetail(site, rows, fullData, comparison) {
   v.classList.add('fade-up');
 }
 
+function onForecastScopeChange() {
+  const scope = $('forecast-scope-select').value;
+  const targetWrap = $('forecast-target-wrap');
+  const targetSelect = $('forecast-target-select');
+
+  if (scope === 'global') {
+    targetWrap.style.display = 'none';
+    loadForecast();
+    return;
+  }
+
+  targetWrap.style.display = 'flex';
+  let options = [];
+  if (scope === 'site') {
+    options = ['SFX','MAH','NAB','SSE','TUN'];
+  } else if (scope === 'cam' && lastRenderData && lastRenderData.rows) {
+    options = lastRenderData.rows.map(r => r.cam);
+  }
+  targetSelect.innerHTML = options.map(o => '<option value="'+esc(o)+'">'+esc(o)+'</option>').join('');
+  loadForecast();
+}
+
+async function loadForecast() {
+  const scope = $('forecast-scope-select') ? $('forecast-scope-select').value : 'global';
+  const target = $('forecast-target-select') ? $('forecast-target-select').value : '';
+
+  const p = new URLSearchParams({scope});
+  if (scope !== 'global' && target) p.set('target', target);
+
+  try {
+    const r = await fetch('/api/forecast?'+p.toString());
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || 'Erreur prévision.');
+    renderForecast(d);
+  } catch(e) {
+    $('forecast-narrative').textContent = e.message || 'Impossible de charger la prévision.';
+  }
+}
+
+function renderForecast(data) {
+  const reg = data.reglements || {};
+  const fac = data.factures || {};
+  const regNext = reg.next_month_forecast;
+  const facNext = fac.next_month_forecast;
+
+  $('f-reg-current').textContent = fmt(reg.current_month_estimate||0);
+  $('f-reg-current-sub').textContent = 'basé sur '+(reg.current_month_days_elapsed||0)+' jour(s) réels';
+
+  $('f-reg-next').textContent = regNext ? fmt(regNext.reconciled) : '—';
+  $('f-reg-next-sub').textContent = regNext ? 'confiance: '+regNext.confidence : 'Données insuffisantes';
+
+  $('f-fac-next').textContent = facNext ? fmt(facNext.reconciled) : '—';
+  $('f-fac-next-sub').textContent = facNext ? 'confiance: '+facNext.confidence : 'Données insuffisantes';
+
+  const gap = data.collection_gap || {};
+  $('f-gap').textContent = gap.direction || '—';
+  $('f-gap-sub').textContent = gap.ratio!=null ? ('ratio '+(gap.ratio*100).toFixed(1)+'%') : '—';
+
+  $('forecast-confidence-badge').textContent = regNext ? ('Confiance: '+regNext.confidence) : '';
+  $('forecast-narrative').textContent = data.narrative || 'Résumé indisponible.';
+
+  renderForecastChart(reg.historical_series||{}, regNext ? regNext.reconciled : null, reg.next_month_key);
+}
+
+function monthLabel(monthKey) {
+  const [y, m] = monthKey.split('-').map(Number);
+  const noms = ['Jan','Fév','Mar','Avr','Mai','Juin','Juil','Août','Sep','Oct','Nov','Déc'];
+  return noms[m-1] + ' ' + String(y).slice(2);
+}
+
+function renderForecastChart(series, forecastValue, forecastKey) {
+  const holder = $('forecast-chart-holder');
+  const entries = Object.entries(series);
+  if (!entries.length) {
+    holder.innerHTML = '<div class="donut-empty">Pas assez de données pour un graphique.</div>';
+    return;
+  }
+
+  const allPoints = entries.map(([k,v]) => ({k, v}));
+  if (forecastValue != null && forecastKey) allPoints.push({k: forecastKey, v: forecastValue, isForecast:true});
+
+  const w = 800, h = 280;
+  const padLeft = 70, padRight = 20, padTop = 20, padBottom = 50;
+  const plotW = w - padLeft - padRight;
+  const plotH = h - padTop - padBottom;
+
+  const values = allPoints.map(p=>p.v);
+  const maxV = Math.max(...values, 1) * 1.1;
+  const minV = Math.min(0, Math.min(...values));
+  const range = (maxV - minV) || 1;
+  const stepX = plotW / (allPoints.length - 1 || 1);
+
+  const xOf = i => padLeft + i*stepX;
+  const yOf = v => padTop + plotH - ((v - minV) / range) * plotH;
+
+  const coords = allPoints.map((p,i) => ({ x: xOf(i), y: yOf(p.v), ...p }));
+  const histCoords = coords.filter(c=>!c.isForecast);
+  const lastHist = histCoords[histCoords.length-1];
+  const forecastCoord = coords.find(c=>c.isForecast);
+
+  // Y-axis gridlines (5 steps)
+  const gridSteps = 5;
+  let gridLines = '';
+  for (let i=0; i<=gridSteps; i++) {
+    const val = minV + (range * i / gridSteps);
+    const y = yOf(val);
+    gridLines +=
+      '<line x1="'+padLeft+'" y1="'+y+'" x2="'+(w-padRight)+'" y2="'+y+'" stroke="var(--border)" stroke-width="1"></line>'+
+      '<text x="'+(padLeft-10)+'" y="'+(y+4)+'" text-anchor="end" font-size="10" fill="var(--text3)" font-family="var(--font-mono)">'+fmtI(Math.round(val))+'</text>';
+  }
+
+  // X-axis month labels (skip some if too many points to avoid overlap)
+  const skipEvery = allPoints.length > 14 ? 2 : 1;
+  let xLabels = '';
+  coords.forEach((c,i) => {
+    if (i % skipEvery !== 0 && !c.isForecast) return;
+    xLabels += '<text x="'+c.x+'" y="'+(h-padBottom+18)+'" text-anchor="middle" font-size="10" fill="var(--text3)">'+esc(monthLabel(c.k))+'</text>';
+  });
+
+  const path = 'M ' + histCoords.map(c=>c.x+','+c.y).join(' L ');
+  let forecastPath = '';
+  if (forecastCoord && lastHist) {
+    forecastPath = 'M '+lastHist.x+','+lastHist.y+' L '+forecastCoord.x+','+forecastCoord.y;
+  }
+
+  const dots = coords.map(c =>
+    '<circle cx="'+c.x+'" cy="'+c.y+'" r="4.5" fill="'+(c.isForecast?'var(--blue)':'var(--teal)')+'" stroke="var(--surface)" stroke-width="2">'+
+    '<title>'+esc(monthLabel(c.k))+' · '+fmt(c.v)+' DT'+(c.isForecast?' (prévision)':'')+'</title></circle>'
+  ).join('');
+
+  // Value label above the forecast point (the one everyone actually wants to read)
+  let forecastLabel = '';
+  if (forecastCoord) {
+    forecastLabel =
+      '<text x="'+forecastCoord.x+'" y="'+(forecastCoord.y-14)+'" text-anchor="middle" font-size="11" font-weight="700" fill="var(--blue)" font-family="var(--font-mono)">'+
+      fmtI(Math.round(forecastCoord.v))+' DT</text>';
+  }
+
+  holder.innerHTML =
+    '<svg viewBox="0 0 '+w+' '+h+'" style="width:100%;height:auto">'+
+      gridLines+
+      '<line x1="'+padLeft+'" y1="'+padTop+'" x2="'+padLeft+'" y2="'+(h-padBottom)+'" stroke="var(--border2)" stroke-width="1"></line>'+
+      '<line x1="'+padLeft+'" y1="'+(h-padBottom)+'" x2="'+(w-padRight)+'" y2="'+(h-padBottom)+'" stroke="var(--border2)" stroke-width="1"></line>'+
+      '<path d="'+path+'" fill="none" stroke="var(--teal)" stroke-width="2.5"></path>'+
+      (forecastPath ? '<path d="'+forecastPath+'" fill="none" stroke="var(--blue)" stroke-width="2.5" stroke-dasharray="6,5"></path>' : '')+
+      dots+
+      forecastLabel+
+      xLabels+
+    '</svg>'+
+    '<div style="display:flex;gap:20px;justify-content:center;margin-top:12px;flex-wrap:wrap">'+
+      '<div style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text2)">'+
+        '<div style="width:18px;height:3px;background:var(--teal);border-radius:2px"></div>'+
+        'Règlements réels (mois passés)'+
+      '</div>'+
+      '<div style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text2)">'+
+        '<div style="width:18px;height:0;border-top:3px dashed var(--blue);border-radius:2px"></div>'+
+        'Prévision (mois prochain)'+
+      '</div>'+
+    '</div>';
+}
+
 /* ══════════════════════════════════════════
    MAIN RENDER
 ══════════════════════════════════════════ */
@@ -3015,11 +3246,17 @@ function render(data) {
 /* ══════════════════════════════════════════
    TABS
 ══════════════════════════════════════════ */
+
+
 function switchTab(name) {
-  const names = ['ranking','detail','ops','sites'];
+  const names = ['ranking','detail','ops','sites','forecast'];
   document.querySelectorAll('.tab-btn').forEach((b,i) =>
     b.classList.toggle('active', names[i]===name));
   names.forEach(n => $('tab-'+n).classList.toggle('active', n===name));
+  if (name === 'forecast' && !window._forecastLoaded) {
+    window._forecastLoaded = true;
+    loadForecast();
+  }
 }
 
 /* ══════════════════════════════════════════

@@ -1,6 +1,6 @@
 import asyncio
 from collections import defaultdict
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime
 import hashlib
 import json
@@ -21,6 +21,7 @@ from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from openpyxl import load_workbook
+import statistics
 
 # Try orjson for faster JSON serialization
 try:
@@ -120,6 +121,8 @@ _cache: dict = {
     "_range_cache": {},  # key: (start, end) -> payload
 }
 
+_import_progress: dict = {"total": 0, "done": 0, "active": False, "stage": ""}
+
 # Larger thread pool for parallel I/O and parsing
 IMPORT_EXECUTOR = ThreadPoolExecutor(max_workers=MAX_PARSE_WORKERS, thread_name_prefix="parse")
 _import_tasks: set[asyncio.Task] = set()
@@ -128,18 +131,19 @@ CAM_SITE_MAP: dict[str, str] = {
     "CAM01": "SFX", "CAM02": "SFX", "CAM03": "SFX", "CAM04": "SFX",
     "CAM05": "SFX", "CAM06": "SFX", "CAM07": "SFX", "CAM36": "SFX",
     "CAM37": "SFX", "CAM38": "SFX", "CAM48": "SFX", "CAM49": "SFX",
-    "CAM58": "SFX", "CAM59": "SFX",
+    "CAM58": "SFX", "CAM59": "SFX", "CAM62": "SFX",
     "CAM40": "MAH", "CAM41": "MAH", "CAM42": "MAH", "CAM43": "MAH",
     "CAM44": "MAH", "CAM45": "MAH", "CAM57": "MAH",
     "CAM50": "NAB", "CAM51": "NAB", "CAM52": "NAB", "CAM53": "NAB",
-    "CAM54": "NAB",
+    "CAM54": "NAB", "CAM55": "NAB",
     "CAM08": "SSE", "CAM09": "SSE", "CAM10": "SSE", "CAM11": "SSE",
     "CAM12": "SSE", "CAM13": "SSE", "CAM14": "SSE", "CAM15": "SSE",
-    "CAM39": "SSE", "CAM46": "SSE", "CAM47": "SSE",
+    "CAM39": "SSE", "CAM46": "SSE", "CAM47": "SSE", "CAM61": "SSE",
     "CAM16": "TUN", "CAM17": "TUN", "CAM18": "TUN", "CAM19": "TUN",
     "CAM20": "TUN", "CAM21": "TUN", "CAM22": "TUN", "CAM23": "TUN",
     "CAM24": "TUN", "CAM25": "TUN", "CAM26": "TUN", "CAM27": "TUN",
-    "CAM29": "TUN", "CAM30": "TUN", "CAM31": "TUN",
+    "CAM28": "TUN", "CAM29": "TUN", "CAM30": "TUN", "CAM31": "TUN",
+    "CAM34": "TUN", "CAM35": "TUN",
 }
 
 
@@ -568,16 +572,16 @@ def unique_paths(paths: list[str]) -> list[str]:
     return ordered
 
 
-def _parse_single_file(path: str) -> tuple[str, list[dict], str | None]:
+def _parse_single_file(args: tuple[str, dict]) -> tuple[str, list[dict], str | None]:
     """Worker for parallel parsing. Returns (path, rows, error)."""
+    path, client_lookup = args
     text, error = read_text_file(path)
     if error:
         return path, [], error
-    return path, parse_lines(text or ""), None
+    return path, parse_lines(text or "", client_lookup), None
 
 
-def load_rows_from_paths(paths: list[str]) -> tuple[list[dict], list[str], list[str]]:
-    """Parallel loader: reads and parses files concurrently in a thread pool."""
+def load_rows_from_paths(paths: list[str], client_lookup: dict[str, dict] | None = None) -> tuple[list[dict], list[str], list[str]]:
     unique = unique_paths(paths)
     if not unique:
         return [], [], []
@@ -586,16 +590,16 @@ def load_rows_from_paths(paths: list[str]) -> tuple[list[dict], list[str], list[
     source_files: list[str] = []
     warnings: list[str] = []
 
-    # Parallel parsing (huge win for many history files)
     with ThreadPoolExecutor(max_workers=MAX_PARSE_WORKERS) as executor:
-        results = list(executor.map(_parse_single_file, unique))
-
-    for path, parsed_rows, error in results:
-        if error:
-            warnings.append(error)
-            continue
-        source_files.append(path)
-        rows.extend(parsed_rows)
+        future_to_path = {executor.submit(_parse_single_file, (p, client_lookup)): p for p in unique}
+        for future in as_completed(future_to_path):
+            path, parsed_rows, error = future.result()
+            _import_progress["done"] += 1
+            if error:
+                warnings.append(error)
+                continue
+            source_files.append(path)
+            rows.extend(parsed_rows)
 
     return rows, source_files, warnings
 
@@ -1087,14 +1091,15 @@ def load_facture_lines_from_paths(paths, article_lookup):
     warnings = []
 
     with ThreadPoolExecutor(max_workers=MAX_PARSE_WORKERS) as executor:
-        results = list(executor.map(_parse_single_facture_file, [(p, article_lookup) for p in unique]))
-
-    for path, parsed, error in results:
-        if error:
-            warnings.append(error)
-            continue
-        source_files.append(path)
-        rows.extend(parsed)
+        future_to_path = {executor.submit(_parse_single_facture_file, (p, article_lookup)): p for p in unique}
+        for future in as_completed(future_to_path):
+            path, parsed, error = future.result()
+            _import_progress["done"] += 1
+            if error:
+                warnings.append(error)
+                continue
+            source_files.append(path)
+            rows.extend(parsed)
 
     return rows, source_files, warnings
 
@@ -1165,6 +1170,260 @@ def filter_big_factures_by_date(rows, start_date, end_date):
             continue
         filtered.append(row)
     return filtered
+
+# ── FORECASTING ENGINE ──────────────────────────────────────────────────────
+
+def build_monthly_series(rows, date_field, amount_field, scope_filter=None, exclude_current_month=True):
+    monthly = defaultdict(float)
+    today = date.today()
+    current_month_key = f"{today.year:04d}-{today.month:02d}"
+    for r in rows:
+        if scope_filter and not scope_filter(r):
+            continue
+        d = r.get(date_field)
+        if not isinstance(d, date):
+            continue
+        month_key = f"{d.year:04d}-{d.month:02d}"
+        if exclude_current_month and month_key == current_month_key:
+            continue
+        monthly[month_key] += r.get(amount_field, 0.0) or 0.0
+    return dict(sorted(monthly.items()))
+
+
+def _fit_linear_trend(monthly_dict):
+    """Least squares fit over index 0..n-1 -> value. Pure Python, no numpy needed."""
+    items = list(monthly_dict.items())
+    n = len(items)
+    if n < 2:
+        return 0.0, (items[0][1] if items else 0.0)
+    xs = list(range(n))
+    ys = [v for _, v in items]
+    x_mean = sum(xs) / n
+    y_mean = sum(ys) / n
+    num = sum((x - x_mean) * (y - y_mean) for x, y in zip(xs, ys))
+    den = sum((x - x_mean) ** 2 for x in xs)
+    slope = num / den if den else 0.0
+    intercept = y_mean - slope * x_mean
+    return slope, intercept
+
+
+def linear_trend_forecast(monthly_dict, months_ahead=1):
+    slope, intercept = _fit_linear_trend(monthly_dict)
+    n = len(monthly_dict)
+    future_index = n + months_ahead - 1
+    return round(slope * future_index + intercept, 3)
+
+
+def seasonal_index_forecast(monthly_dict, target_month_key, months_ahead=1):
+    slope, intercept = _fit_linear_trend(monthly_dict)
+    items = list(monthly_dict.items())
+    n = len(items)
+
+    ratios_by_month = defaultdict(list)
+    for idx, (mk, actual) in enumerate(items):
+        trend_val = slope * idx + intercept
+        if trend_val:
+            month_num = int(mk.split("-")[1])
+            ratios_by_month[month_num].append(actual / trend_val)
+
+    target_month_num = int(target_month_key.split("-")[1])
+    seasonal_idx = (
+        statistics.mean(ratios_by_month[target_month_num])
+        if ratios_by_month.get(target_month_num)
+        else 1.0
+    )
+
+    future_index = n + months_ahead - 1
+    trend_val = slope * future_index + intercept
+    return round(trend_val * seasonal_idx, 3), round(seasonal_idx, 3)
+
+
+def yoy_naive_forecast(monthly_dict, target_month_key):
+    growth_rates = []
+    for mk, val in monthly_dict.items():
+        y, m = map(int, mk.split("-"))
+        prev_key = f"{y-1:04d}-{m:02d}"
+        if prev_key in monthly_dict and monthly_dict[prev_key]:
+            growth_rates.append((val - monthly_dict[prev_key]) / monthly_dict[prev_key])
+
+    avg_growth = statistics.mean(growth_rates) if growth_rates else 0.0
+
+    y, m = map(int, target_month_key.split("-"))
+    same_month_last_year_key = f"{y-1:04d}-{m:02d}"
+    base = monthly_dict.get(same_month_last_year_key)
+    if base is None:
+        return None, round(avg_growth, 4)
+    return round(base * (1 + avg_growth), 3), round(avg_growth, 4)
+
+
+def reconcile_forecasts(yoy, trend, seasonal):
+    values = [v for v in (yoy, trend, seasonal) if v is not None]
+    if not values:
+        return 0.0, "low", 0.0
+    mean_val = statistics.mean(values)
+    spread = (max(values) - min(values)) / mean_val if mean_val else 0.0
+    if len(values) < 3:
+        confidence = "low"
+    elif spread < 0.08:
+        confidence = "high"
+    elif spread < 0.20:
+        confidence = "medium"
+    else:
+        confidence = "low"
+    final = mean_val if confidence != "low" else trend
+    return round(final, 3), confidence, round(spread * 100, 1)
+
+
+def current_month_runrate(rows, date_field, amount_field, scope_filter=None):
+    today = date.today()
+    month_key = f"{today.year:04d}-{today.month:02d}"
+    days_in_month = last_day_of_month(today.year, today.month)
+    days_elapsed = today.day
+
+    actual_so_far = 0.0
+    for r in rows:
+        if scope_filter and not scope_filter(r):
+            continue
+        d = r.get(date_field)
+        if not isinstance(d, date):
+            continue
+        if f"{d.year:04d}-{d.month:02d}" == month_key:
+            actual_so_far += r.get(amount_field, 0.0) or 0.0
+
+    if days_elapsed <= 0:
+        return round(actual_so_far, 3), round(actual_so_far, 3), 0
+    projected = actual_so_far * (days_in_month / days_elapsed)
+    return round(projected, 3), round(actual_so_far, 3), days_elapsed
+
+
+def build_forecast_payload(rows, date_field, amount_field, scope_filter=None):
+    monthly = build_monthly_series(rows, date_field, amount_field, scope_filter, exclude_current_month=True)
+
+    today = date.today()
+    next_month, next_year = today.month + 1, today.year
+    if next_month > 12:
+        next_month, next_year = 1, next_year + 1
+    next_month_key = f"{next_year:04d}-{next_month:02d}"
+
+    current_estimate, current_actual, days_elapsed = current_month_runrate(
+        rows, date_field, amount_field, scope_filter
+    )
+
+    if len(monthly) < 2:
+        return {
+            "current_month_estimate": current_estimate,
+            "current_month_actual_so_far": current_actual,
+            "current_month_days_elapsed": days_elapsed,
+            "next_month_key": next_month_key,
+            "next_month_forecast": None,
+            "historical_series": monthly,
+            "insufficient_data": True,
+        }
+
+    yoy_val, yoy_growth = yoy_naive_forecast(monthly, next_month_key)
+    trend_val = linear_trend_forecast(monthly, months_ahead=1)
+    seasonal_val, seasonal_idx = seasonal_index_forecast(monthly, next_month_key, months_ahead=1)
+    final, confidence, spread = reconcile_forecasts(yoy_val, trend_val, seasonal_val)
+
+    return {
+        "current_month_estimate": current_estimate,
+        "current_month_actual_so_far": current_actual,
+        "current_month_days_elapsed": days_elapsed,
+        "next_month_key": next_month_key,
+        "next_month_forecast": {
+            "reconciled": final,
+            "confidence": confidence,
+            "spread_pct": spread,
+            "methods": {
+                "yoy_naive": yoy_val,
+                "linear_trend": trend_val,
+                "trend_seasonal": seasonal_val,
+            },
+            "yoy_growth_rate": yoy_growth,
+            "seasonal_index": seasonal_idx,
+        },
+        "historical_series": monthly,
+        "insufficient_data": False,
+    }
+
+
+def compute_collection_gap(reglements_payload, factures_payload):
+    reg_next = (reglements_payload.get("next_month_forecast") or {}).get("reconciled")
+    fac_next = (factures_payload.get("next_month_forecast") or {}).get("reconciled")
+    if not reg_next or not fac_next:
+        return {"ratio": None, "historical_avg_ratio": None, "direction": "normal"}
+
+    forecast_ratio = reg_next / fac_next
+
+    reg_hist = reglements_payload.get("historical_series", {})
+    fac_hist = factures_payload.get("historical_series", {})
+    ratios = [
+        reg_hist[mk] / fac_hist[mk]
+        for mk in fac_hist
+        if mk in reg_hist and fac_hist[mk]
+    ]
+    avg_ratio = statistics.mean(ratios) if ratios else forecast_ratio
+
+    diff = forecast_ratio - avg_ratio
+    direction = "en baisse" if diff < -0.05 else "en hausse" if diff > 0.05 else "normal"
+
+    return {
+        "ratio": round(forecast_ratio, 3),
+        "historical_avg_ratio": round(avg_ratio, 3),
+        "direction": direction,
+    }
+def fmt_dt(value):
+    return f"{value:,.0f}".replace(",", " ")
+
+def generate_forecast_narrative(reglements_payload, factures_payload, collection_gap):
+    reg_next = reglements_payload.get("next_month_forecast")
+    fac_next = factures_payload.get("next_month_forecast")
+    reg_current = reglements_payload.get("current_month_estimate", 0)
+    days_elapsed = reglements_payload.get("current_month_days_elapsed", 0)
+
+    if not reg_next or not fac_next:
+        return (
+            f"Pas encore assez d'historique pour établir une vraie prévision. "
+            f"Sur les {days_elapsed} jour(s) écoulés ce mois-ci, on est déjà à environ "
+            f"{fmt_dt(reg_current)} DT de règlements. Revenez une fois que vous aurez "
+            f"au moins deux années complètes de données."
+        )
+
+    reg_val = reg_next["reconciled"]
+    fac_val = fac_next["reconciled"]
+    confidence = reg_next["confidence"]
+    yoy_growth = reg_next.get("yoy_growth_rate", 0) or 0
+
+    # Direction phrase
+    if yoy_growth > 0.03:
+        direction_txt = f"en hausse d'environ {round(yoy_growth*100)}% par rapport à l'année dernière"
+    elif yoy_growth < -0.03:
+        direction_txt = f"en baisse d'environ {abs(round(yoy_growth*100))}% par rapport à l'année dernière"
+    else:
+        direction_txt = "à peu près stable par rapport à l'année dernière"
+
+    # Confidence phrase
+    if confidence == "high":
+        confidence_txt = "Cette estimation est assez fiable, les différentes façons de calculer donnent presque le même résultat."
+    elif confidence == "medium":
+        confidence_txt = "Cette estimation reste correcte, mais avec une marge d'erreur normale."
+    else:
+        confidence_txt = "Cette estimation est moins fiable que d'habitude, car les derniers mois ont été plus irréguliers."
+
+    # Collection gap phrase
+    gap_dir = collection_gap.get("direction", "normal")
+    if gap_dir == "en baisse":
+        gap_txt = " Petit point d'attention : l'écart entre ce qui est vendu et ce qui est réellement encaissé se creuse un peu ce mois-ci, à surveiller."
+    elif gap_dir == "en hausse":
+        gap_txt = " Bonne nouvelle : l'encaissement suit bien les ventes, voire mieux que d'habitude."
+    else:
+        gap_txt = ""
+
+    return (
+        f"On s'attend à environ {fmt_dt(reg_val)} DT de règlements le mois prochain, "
+        f"{direction_txt}. Les ventes prévues sur la même période sont d'environ {fmt_dt(fac_val)} DT. "
+        f"{confidence_txt}{gap_txt}"
+    )
 
 
 def build_cam_facture_payload(cam, factures, *, mode, source_files=None, date_range=None, warnings=None):
@@ -1254,10 +1513,11 @@ def parse_iso_date(value: str) -> date:
         raise ValueError("Date invalide.") from exc
 
 
-def parse_lines(text: str):
+def parse_lines(text: str, client_lookup: dict[str, dict] | None = None):
     """Optimized parser - pre-compiled regex, minimal allocations."""
     results = []
     type_map_keys = list(TYPE_MAP.keys())
+    lookup = client_lookup or {}
     for line in text.splitlines():
         line = line.strip()
         if not line:
@@ -1283,12 +1543,23 @@ def parse_lines(text: str):
         ref2 = parts[1]
         cam_match = CAM_REGEX.search(ref2)
         cam = cam_match.group(1) if cam_match else None
+        site = normalize_site(parts[4])
+
+        # NEW: fallback — resolve CAM via CLIENT.txt when ref2 doesn't carry it
+        # (mainly happens for CTRT / CCHQR lines)
+        if cam is None:
+            client_code = parts[6].strip() if len(parts) > 6 else ""
+            client_record = lookup.get(client_code)
+            if client_record and client_record.get("cam"):
+                cam = client_record["cam"]
+                site = get_site(cam)  # trust the client's CAM->site mapping
+
         reglement_date = parse_reglement_date(parts[2])
 
         results.append({
             "code": code,
             "cam": cam,
-            "site": normalize_site(parts[4]),
+            "site": site,
             "type_key": prefix,
             "type_label": TYPE_MAP[prefix],
             "amount": amount,
@@ -1296,7 +1567,6 @@ def parse_lines(text: str):
             "reglement_date_iso": reglement_date.isoformat() if reglement_date else None,
         })
     return results
-
 
 @app.get("/", response_class=HTMLResponse)
 async def index():
@@ -1320,7 +1590,6 @@ def _invalidate_derived_caches():
     _cache["_default_payload"] = None
     _cache["_status_payload"] = None
     _cache["_range_cache"] = {}
-
 
 def reload_cache() -> None:
     import_context = _cache.get("import_context") or {}
@@ -1368,26 +1637,51 @@ def reload_cache() -> None:
             "source_diagnostics": {"current": current_diagnostic, "history": history_diagnostic},
             "sync": sync_info,
         })
+        _import_progress.update({"active": False, "total": 0, "done": 0, "stage": ""})
         _invalidate_derived_caches()
         return
 
+    # ── List all files up front so we know the real total for progress reporting ──
     history_files: list[str] = []
     if history_dir:
         history_files, dir_warnings = list_reglement_files(history_dir)
         warnings.extend(dir_warnings)
 
+    facture_history_files: list[str] = []
+    if factures_dir:
+        facture_history_files, facture_dir_warnings = list_plain_files(factures_dir)
+        warnings.extend(facture_dir_warnings)
+
+    total_units = (
+        len(history_files)
+        + len(facture_history_files)
+        + (1 if current_path else 0)
+        + (1 if facture_path else 0)
+    )
+    _import_progress.update({
+        "active": True,
+        "total": max(total_units, 1),
+        "done": 0,
+        "stage": "Chargement des fichiers de référence…",
+    })
+
+    client_lookup, clients_by_cam, client_warnings = load_client_lookup(client_path)
+    warnings.extend(client_warnings)
+
     # Parallel loading: history + current + article + etatmarge + factures all at once
+    _import_progress["stage"] = "Lecture de l'historique des règlements…"
     history_rows: list[dict] = []
     history_sources: list[str] = []
     if history_files:
-        history_rows, history_sources, hist_warnings = load_rows_from_paths(history_files)
+        history_rows, history_sources, hist_warnings = load_rows_from_paths(history_files, client_lookup)
         warnings.extend(hist_warnings)
 
+    _import_progress["stage"] = "Lecture du règlement du mois en cours…"
     current_rows: list[dict] = []
     current_sources: list[str] = []
     cur_warnings: list[str] = []
     if current_path:
-        current_rows, current_sources, cur_warnings = load_rows_from_paths([current_path])
+        current_rows, current_sources, cur_warnings = load_rows_from_paths([current_path], client_lookup)
         warnings.extend(cur_warnings)
 
     all_rows = history_rows + current_rows
@@ -1397,14 +1691,8 @@ def reload_cache() -> None:
     warnings.extend(article_warnings)
     etatmarge_lookup, etatmarge_warnings = load_etatmarge_lookup(etatmarge_path)
     warnings.extend(etatmarge_warnings)
-    client_lookup, clients_by_cam, client_warnings = load_client_lookup(client_path)
-    warnings.extend(client_warnings)
 
-    facture_history_files: list[str] = []
-    if factures_dir:
-        facture_history_files, facture_dir_warnings = list_plain_files(factures_dir)
-        warnings.extend(facture_dir_warnings)
-
+    _import_progress["stage"] = "Lecture des factures…"
     facture_current_rows: list[dict] = []
     facture_current_sources: list[str] = []
     if facture_path:
@@ -1450,8 +1738,9 @@ def reload_cache() -> None:
         "source_diagnostics": {"current": current_diagnostic, "history": history_diagnostic},
         "sync": sync_info,
     })
-    _invalidate_derived_caches()
 
+    _import_progress.update({"active": False, "done": _import_progress["total"], "stage": "Terminé"})
+    _invalidate_derived_caches()
 
 def get_or_reload_cache() -> dict:
     if _cache["loaded_at"] is None:
@@ -1960,10 +2249,52 @@ async def get_cam_inactive_clients(
     }
 
 
+@app.get("/api/forecast")
+async def get_forecast(
+    scope: str = Query("global"),
+    target: str | None = Query(None),
+):
+    cache = get_or_reload_cache()
+
+    scope_filter = None
+    if scope == "site" and target:
+        site_code = normalize_site(target)
+        scope_filter = lambda r: (get_site(r.get("cam")) if r.get("cam") else r.get("site")) == site_code
+    elif scope == "cam" and target:
+        cam_code = target.strip().upper()
+        scope_filter = lambda r: r.get("cam") == cam_code
+
+    reglements_payload = build_forecast_payload(cache["all_rows"], "reglement_date", "amount", scope_filter)
+    factures_payload = build_forecast_payload(cache["all_big_factures"], "facture_date", "total_amount", scope_filter)
+
+    collection_gap = compute_collection_gap(reglements_payload, factures_payload)
+    narrative = generate_forecast_narrative(reglements_payload, factures_payload, collection_gap)
+
+
+    return {
+        "scope": scope,
+        "target": target,
+        "reglements": reglements_payload,
+        "factures": factures_payload,
+        "collection_gap": collection_gap,
+        "narrative": narrative,
+    }
+
 @app.get("/api/status")
 async def source_status():
     return get_source_status()
 
+@app.get("/api/import-progress")
+async def get_import_progress():
+    total = max(_import_progress.get("total", 0), 1)
+    done = min(_import_progress.get("done", 0), total)
+    return {
+        "active": _import_progress.get("active", False),
+        "total": _import_progress.get("total", 0),
+        "done": _import_progress.get("done", 0),
+        "pct": round((done / total) * 100, 1),
+        "stage": _import_progress.get("stage", ""),
+    }
 
 async def process_import_async(import_root: str) -> None:
     loop = asyncio.get_running_loop()
